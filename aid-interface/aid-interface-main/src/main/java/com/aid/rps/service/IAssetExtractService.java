@@ -265,4 +265,15 @@ public interface IAssetExtractService
      * @return 实际回收数量
      */
     int resetStartupPendingQueuedTasks(int batchSize);
+
+    /**
+     * 角色形态图换脸（ComfyUI ReActor）：用目标人脸替换该角色全部形态图中的人物脸，
+     * 原图备份到 backup_image_url。同步执行，返回 {total, success, failed, swappedUrls, errors}。
+     *
+     * @param assetId      资产ID（角色/道具/场景）
+     * @param faceImageUrl 目标人脸图片地址（上传后的 /profile/... 或远程 URL）
+     * @param userId       操作者
+     * @return 换脸统计结果
+     */
+    java.util.Map<String, Object> faceSwapRoleFormImages(Long assetId, String faceImageUrl, Long userId);
 }

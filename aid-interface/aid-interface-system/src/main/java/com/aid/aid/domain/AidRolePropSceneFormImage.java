@@ -57,6 +57,10 @@ public class AidRolePropSceneFormImage extends BaseEntity implements Serializabl
     @MediaUrl
     private String imageUrl;
 
+    /** 换脸前的原始图片备份地址（角色换脸时填充，口径同 imageUrl） */
+    @MediaUrl
+    private String backupImageUrl;
+
     /** 来源类型：ai_auto / ai_builder / ai_manual / upload / official / migrate */
     @Excel(name = "来源类型")
     private String sourceType;

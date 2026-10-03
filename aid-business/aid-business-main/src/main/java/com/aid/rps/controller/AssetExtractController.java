@@ -10,6 +10,7 @@ import com.aid.rps.dto.AssetExtractTaskVO;
 import com.aid.rps.dto.ExtractCostEstimateRequest;
 import com.aid.rps.dto.FormGenerateRequest;
 import com.aid.rps.dto.FormCardImageGenerateRequest;
+import com.aid.rps.dto.FaceSwapRoleRequest;
 import com.aid.rps.dto.FormEditChatImageGenerateRequest;
 import com.aid.rps.dto.FormImageGenerateRequest;
 import com.aid.rps.dto.FormMultiViewImageGenerateRequest;
@@ -235,10 +236,28 @@ public class AssetExtractController extends BaseController
             logger.error("资产提取业务拒绝: {}", e.getMessage());
             return error(e.getMessage());
         }
-        catch (RuntimeException e)
+        // RuntimeException 交给全局异常处理器：安全的业务短文案会保留，技术细节仍会被过滤。
+    }
+
+    /**
+     * 角色形态图换脸（ComfyUI ReActor，同步）：用目标人脸替换该角色全部形态图中的人物脸，
+     * 原图备份到 backup_image_url。返回 {total, success, failed, swappedUrls, errors}。
+     */
+    @PostMapping("/form/face-swap-role")
+    public AjaxResult faceSwapRole(@Valid @RequestBody FaceSwapRoleRequest request)
+    {
+        Long userId = SecurityUtils.getUserId();
+        try
         {
-            logger.error("资产提取接口处理异常", e);
-            return error("操作失败");
+            java.util.Map<String, Object> result = assetExtractService.faceSwapRoleFormImages(
+                    request.getAssetId(), request.getFaceImageUrl(), userId);
+            return success(result);
         }
+        catch (ServiceException e)
+        {
+            logger.error("角色换脸业务拒绝: {}", e.getMessage());
+            return error(e.getMessage());
+        }
+        // RuntimeException 交给全局异常处理器。
     }
 }
