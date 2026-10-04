@@ -40,13 +40,17 @@ export function useScpCharacterImages(ctx: ScpCtx): ScpCharacterImagesApi {
     ctx.showImportCharacterFormImageModal.set(true)
   }
 
-  const handleCharacterFormImageImport = async (fileOrAsset: File | string | any) => {
+  const handleCharacterFormImageImportTo = async (
+    characterIndex: number,
+    formIndex: number,
+    fileOrAsset: File | string | any,
+    options?: { quiet?: boolean; strict?: boolean }
+  ) => {
     const now = new Date()
     let imageUrl: string
     let imageTitle: string
     let source: string
-    const [characterIndex, formIndex] = ctx.currentImportCharacterFormKey.get().split('-').map(Number)
-    const formKey = ctx.currentImportCharacterFormKey.get()
+    const formKey = `${characterIndex}-${formIndex}`
 
     // 添加图片到角色形态
     if (!ctx.characterFormImages.get()[formKey]) {
@@ -74,13 +78,16 @@ export function useScpCharacterImages(ctx: ScpCtx): ScpCharacterImagesApi {
       imageTitle =
         fileOrAsset.name?.replace(/\.[^/.]+$/, '') ||
         `形态图${ctx.characterFormImages.get()[formKey].length + 1}`
-      source = '资源库导入'
+      source = fileOrAsset.source === '本地上传' ? '本地上传' : '资源库导入'
     } else {
       message.error('导入失败：无效的图片数据')
       return
     }
 
     const formId = ctx.ensureFormIdForRpsUpdate('character', characterIndex, formIndex)
+    if (formId == null && options?.strict) {
+      throw new Error('角色形态尚未保存')
+    }
     let createdImageId: number | undefined
     if (formId != null) {
       try {
@@ -94,7 +101,8 @@ export function useScpCharacterImages(ctx: ScpCtx): ScpCharacterImagesApi {
         if (createdImageId != null) {
           await ctx.tryUseFormImage({ imageId: createdImageId })
         }
-      } catch {
+      } catch (error) {
+        if (options?.strict) throw error
         // 不阻断本地回显，避免用户操作丢失
       }
     }
@@ -116,7 +124,12 @@ export function useScpCharacterImages(ctx: ScpCtx): ScpCharacterImagesApi {
     ctx.characterFormImages.set({ ...ctx.characterFormImages.get(), [formKey]: nextList })
 
     const formName = ctx.characterForms.get()[characterIndex][formIndex].name
-    message.success(`已为「${formName}」导入形态图片`)
+    if (!options?.quiet) message.success(`已为「${formName}」导入形态图片`)
+  }
+
+  const handleCharacterFormImageImport = async (fileOrAsset: File | string | any) => {
+    const [characterIndex, formIndex] = ctx.currentImportCharacterFormKey.get().split('-').map(Number)
+    await handleCharacterFormImageImportTo(characterIndex, formIndex, fileOrAsset)
   }
 
   const handleEditCharacterFormImage = (characterIndex: number, formIndex: number) => {
@@ -430,6 +443,7 @@ export function useScpCharacterImages(ctx: ScpCtx): ScpCharacterImagesApi {
     handleAutoGenerateCharacter,
     handleImportCharacterFormImage,
     handleCharacterFormImageImport,
+    handleCharacterFormImageImportTo,
     handleEditCharacterFormImage,
     handleEditCharacterFormImageWithIndex,
     handleCharacterFormImageUpdate,

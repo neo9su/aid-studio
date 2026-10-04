@@ -8,12 +8,14 @@ import type {
   UIEvent as ReactUIEvent
 } from 'react'
 import { Button, Form, Input, Modal, Select, message } from 'antd'
-import { PlusOutlined, SearchOutlined } from '@ant-design/icons'
+import { CopyOutlined, PlusOutlined, RobotOutlined, SearchOutlined } from '@ant-design/icons'
 import type { MergedAssetVO, UserAssetCustomTypeItem } from '~/types/business-api'
 import {
   userAssetCustomCreate,
   userAssetCustomDelete,
   userAssetCustomDetail,
+  userAssetCustomGenerateImage,
+  userAssetCustomGenerateImageStatus,
   userAssetMergedPage,
   userAssetCustomTypeList,
   userAssetCustomUpdate
@@ -62,7 +64,6 @@ import { assetUrl } from '~/utils/assetUrl'
 import { waitInfiniteScrollAppendDelay } from '~/utils/infiniteScrollDelay'
 import { uploadImageToOssWithToast } from '~/utils/ossUpload'
 import { isMergedAssetUserOwned } from '~/utils/mergedAssetSource'
-import { openImagePreviewModal } from '~/utils/openImagePreviewModal'
 import './AssetsLibraryPanel.css'
 
 const deleteWhite = assetUrl(deleteWhiteSvg)
@@ -97,6 +98,8 @@ const emojiSel = assetUrl(emojiSelSvg)
 const ASSET_PAGE_SIZE = 30
 const ASSET_SCROLL_LOAD_THRESHOLD_PX = 180
 const ASSET_APPEND_ANIMATION_DELAY_MS = 650
+const ASSET_IMAGE_POLL_INTERVAL_MS = 2000
+const ASSET_IMAGE_MAX_POLLS = 150
 
 type AssetItem = {
   id: string
@@ -186,6 +189,10 @@ export function AssetsLibraryPanel() {
   const editingAssetIdRef = useRef<number | null>(null)
   const [assetSubmitting, setAssetSubmitting] = useState(false)
   const [assetCoverUploading, setAssetCoverUploading] = useState(false)
+  const [previewAsset, setPreviewAsset] = useState<AssetItem | null>(null)
+  const [previewPrompt, setPreviewPrompt] = useState('')
+  const [assetImageGenerating, setAssetImageGenerating] = useState(false)
+  const [brokenImageKeys, setBrokenImageKeys] = useState<Set<string>>(new Set())
   const assetCoverInputRef = useRef<HTMLInputElement | null>(null)
 
   const [assetForm, setAssetForm] = useState<AssetFormState>({
@@ -411,16 +418,85 @@ export function AssetsLibraryPanel() {
     }
   }, [])
 
+  function assetIdentity(asset: AssetItem) {
+    return `${asset.sourceFlag}:${asset.id}`
+  }
+
+  function markAssetImageBroken(asset: AssetItem) {
+    const key = assetIdentity(asset)
+    setBrokenImageKeys((current) => {
+      if (current.has(key)) return current
+      const next = new Set(current)
+      next.add(key)
+      return next
+    })
+  }
+
   function openAssetPreview(asset: AssetItem) {
-    const imageUrl = asset.raw.imageUrl?.trim() || (asset.hasCover ? asset.thumbnail : '')
-    if (!imageUrl) {
-      message.info('该资产暂无图片可预览')
+    setPreviewAsset(asset)
+    setPreviewPrompt(asset.raw.promptText?.trim() || '')
+  }
+
+  async function copyPreviewPrompt() {
+    if (!previewPrompt.trim()) {
+      message.warning('该资产暂无提示词')
       return
     }
-    openImagePreviewModal({
-      url: imageUrl,
-      title: asset.name
-    })
+    await navigator.clipboard.writeText(previewPrompt.trim())
+    message.success('提示词已复制')
+  }
+
+  async function generatePreviewAssetImage() {
+    const asset = previewAsset
+    const prompt = previewPrompt.trim()
+    if (!asset) return
+    if (!prompt) {
+      message.warning('请先填写提示词')
+      return
+    }
+    const assetId = Number(asset.id)
+    if (!Number.isFinite(assetId) || assetId <= 0) {
+      message.error('资产ID无效')
+      return
+    }
+    setAssetImageGenerating(true)
+    try {
+      let task = await userAssetCustomGenerateImage({
+        assetId,
+        sourceFlag: asset.sourceFlag,
+        prompt
+      })
+      for (let count = 0; count < ASSET_IMAGE_MAX_POLLS; count += 1) {
+        if (task.status === 'SUCCEEDED' || task.status === 'FAILED') break
+        await new Promise((resolve) => window.setTimeout(resolve, ASSET_IMAGE_POLL_INTERVAL_MS))
+        task = await userAssetCustomGenerateImageStatus(task.taskId)
+      }
+      if (task.status !== 'SUCCEEDED') {
+        throw new Error(task.userMessage || task.errorMessage || '图片生成未完成，请稍后重试')
+      }
+      const imageUrl = String(task.ossUrl || task.originUrl || '').trim()
+      if (!imageUrl) throw new Error('模型已完成，但未返回可用图片')
+
+      if (isUserOwnedAsset(asset)) {
+        await userAssetCustomUpdate({ id: assetId, promptText: prompt, imageUrl })
+      } else {
+        await userAssetCustomCreate({
+          assetType: asset.type,
+          assetName: `${asset.name}（AI补图）`,
+          personalityDesc: asset.raw.personalityDesc?.trim() || undefined,
+          promptText: prompt,
+          imageUrl,
+          remark: '由官方参考资产 AI 补图生成'
+        })
+      }
+      message.success(isUserOwnedAsset(asset) ? '参考图已生成并保存' : '已生成并保存到个人资产')
+      setPreviewAsset(null)
+      await fetchAssetList({ preserveItems: true })
+    } catch (err: any) {
+      message.error(err?.msg || err?.message || 'AI 生成失败')
+    } finally {
+      setAssetImageGenerating(false)
+    }
   }
 
   function resetAssetForm() {
@@ -650,7 +726,7 @@ export function AssetsLibraryPanel() {
           ) : null}
           {myAssets.map((asset, index) => (
             <article
-              key={asset.id}
+              key={assetIdentity(asset)}
               className={`works-lib-card${
                 appendedFromIndex !== null && index >= appendedFromIndex
                   ? ' assets-lib-card--appended'
@@ -667,10 +743,12 @@ export function AssetsLibraryPanel() {
             >
               <div
                 className={`works-lib-card__cover${
-                  !asset.hasCover ? ' works-lib-card__cover--placeholder' : ''
+                  !asset.hasCover || brokenImageKeys.has(assetIdentity(asset))
+                    ? ' works-lib-card__cover--placeholder'
+                    : ''
                 }`}
               >
-                {asset.hasCover ? (
+                {asset.hasCover && !brokenImageKeys.has(assetIdentity(asset)) ? (
                   <ShimmerImage
                     src={asset.thumbnail}
                     alt={asset.name}
@@ -679,16 +757,20 @@ export function AssetsLibraryPanel() {
                     objectFit="cover"
                     revealDirection="fade"
                     minShimmerMs={280}
+                    onError={() => markAssetImageBroken(asset)}
                   />
                 ) : (
-                  <img
-                    className="card-cover-placeholder-icon"
-                    src={emptyImageIconUrl}
-                    alt=""
-                    width={88}
-                    height={88}
-                    draggable={false}
-                  />
+                  <div className="assets-lib-missing-cover">
+                    <img
+                      className="card-cover-placeholder-icon"
+                      src={emptyImageIconUrl}
+                      alt=""
+                      width={72}
+                      height={72}
+                      draggable={false}
+                    />
+                    <span>{asset.raw.promptText ? '图片缺失，可 AI 补图' : '图片与提示词均缺失'}</span>
+                  </div>
                 )}
                 <div className="works-lib-card__cover-actions">
                   {isUserOwnedAsset(asset) ? (
@@ -759,6 +841,74 @@ export function AssetsLibraryPanel() {
           ) : null}
         </div>
       </div>
+
+      <Modal
+        open={Boolean(previewAsset)}
+        footer={null}
+        width={760}
+        wrapClassName="create-flow-modal asset-preview-modal-wrap"
+        onCancel={() => !assetImageGenerating && setPreviewAsset(null)}
+        title={
+          <ModalTitleWatermark title={previewAsset?.name || '资产详情'} watermark="ASSET" />
+        }
+      >
+        {previewAsset ? (
+          <div className="asset-preview-detail">
+            <div className="asset-preview-detail__media">
+              {previewAsset.hasCover && !brokenImageKeys.has(assetIdentity(previewAsset)) ? (
+                <ShimmerImage
+                  src={previewAsset.thumbnail}
+                  alt={previewAsset.name}
+                  wrapperClass="asset-preview-detail__image-wrap"
+                  imgClass="asset-preview-detail__image"
+                  objectFit="contain"
+                  revealDirection="fade"
+                  onError={() => markAssetImageBroken(previewAsset)}
+                />
+              ) : (
+                <div className="asset-preview-detail__missing">
+                  <img src={emptyImageIconUrl} alt="" width={72} height={72} />
+                  <strong>参考图片不可用</strong>
+                  <span>
+                    {previewAsset.sourceFlag === 'official'
+                      ? '本机尚未安装对应的官方资源图片，可使用下方提示词重新生成个人副本。'
+                      : '图片文件已失效，可使用下方提示词重新生成。'}
+                  </span>
+                </div>
+              )}
+            </div>
+            {previewAsset.raw.personalityDesc ? (
+              <div className="asset-preview-detail__description">
+                <span>特征描述</span>
+                <p>{previewAsset.raw.personalityDesc}</p>
+              </div>
+            ) : null}
+            <label className="asset-preview-detail__prompt">
+              <span>生成提示词</span>
+              <Input.TextArea
+                value={previewPrompt}
+                rows={7}
+                placeholder="该资产暂无提示词，可在此补充后使用 AI 生成"
+                onChange={(event) => setPreviewPrompt(event.target.value)}
+              />
+            </label>
+            <div className="asset-preview-detail__actions">
+              <Button icon={<CopyOutlined />} disabled={!previewPrompt.trim()} onClick={() => void copyPreviewPrompt()}>
+                复制提示词
+              </Button>
+              <Button
+                type="primary"
+                icon={<RobotOutlined />}
+                loading={assetImageGenerating}
+                disabled={!previewPrompt.trim()}
+                onClick={() => void generatePreviewAssetImage()}
+              >
+                AI 生成参考图
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal
         open={assetFormOpen}

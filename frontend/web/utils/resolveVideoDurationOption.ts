@@ -61,5 +61,8 @@ export function buildRecommendedDurationTipText(
   if (recommended == null) return ''
   const selected = toPositiveInt(selectedSeconds)
   if (selected != null && selected === recommended) return '当前为推荐最优时长'
+  if (selected != null && selected < recommended) {
+    return `分镜需 ${recommended} 秒，当前模型选择 ${selected} 秒，建议拆镜`
+  }
   return `建议 ${recommended} 秒`
 }

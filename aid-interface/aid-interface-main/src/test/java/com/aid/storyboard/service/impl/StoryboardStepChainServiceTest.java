@@ -1,6 +1,8 @@
 package com.aid.storyboard.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
@@ -38,5 +40,23 @@ class StoryboardStepChainServiceTest
         String message = service.resolveChainFailureMessage("video", new RuntimeException(prehold));
 
         assertEquals("预扣余额不足", message);
+    }
+
+    @Test
+    void shouldIgnoreStaleAudioPreferenceWhenChainHasNoExplicitVideoModel()
+    {
+        assertNull(StoryboardStepChainService.resolveChainedGenerateAudio(null, true));
+        assertNull(StoryboardStepChainService.resolveChainedGenerateAudio("", true));
+        assertTrue(StoryboardStepChainService.resolveChainedGenerateAudio(
+                "agnes-video-2.5-flash", true));
+    }
+
+    @Test
+    void shouldIgnoreStaleResolutionWhenChainHasNoExplicitVideoModel()
+    {
+        assertNull(StoryboardStepChainService.resolveChainedResolution(null, "720P"));
+        assertNull(StoryboardStepChainService.resolveChainedResolution("", "720P"));
+        assertEquals("768P", StoryboardStepChainService.resolveChainedResolution(
+                "minimax-h3-t2v", "768P"));
     }
 }

@@ -60,6 +60,7 @@ export function createInitialCreationState() {
         genre: '',
         style: '',
         description: '',
+        complianceProfile: 'CN_MAINLAND' as const,
         aspectRatio: '16:9' as const,
         scriptType: 'plot' as const,
         modelStrategy: 'economy' as const,

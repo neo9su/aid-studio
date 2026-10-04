@@ -10,10 +10,11 @@
  *    /extract/form/generate（不再在提取成功后自动串行调用）
  */
 
-import { message } from 'antd'
+import { createElement } from 'react'
+import { Modal,message } from 'antd'
 import type { ExtractAgents,ExtractModalScope } from '~/components/steps/ExtractAgentModal'
 import { createTaskStream } from '~/composables/useTaskStream'
-import type { AssetExtractType,UserTaskStatus } from '~/types/business-api'
+import type { AssetExtractScope,AssetExtractType,UserTaskStatus } from '~/types/business-api'
 import {
 userAssetExtractEstimate,
 userAssetExtractParallel
@@ -21,7 +22,10 @@ userAssetExtractParallel
 import type { ExtractModelCodes } from '~/utils/extractAgentBiz'
 import { shouldAnnounceExtractSuccess } from '~/utils/extractTaskSuccessAnnounce'
 import { inferExtractAssetTabFromSse } from '~/utils/inferExtractAssetTabFromSse'
-import { buildAssetExtractSubmitBody } from '~/utils/assetExtractSubmitBody'
+import {
+  buildAssetExtractSubmitBody,
+  resolveAssetExtractScopeForTypes
+} from '~/utils/assetExtractSubmitBody'
 import { scriptExtractBaselineStore } from '~/utils/scriptExtractBaseline'
 import { resolveStoryScriptSaveContext } from '~/utils/storyScriptSaveContext'
 import { formatPartialFailedMessage } from '~/utils/taskPartialFailed'
@@ -37,10 +41,11 @@ export function startExtractAssets(
     manualModelPickByKind?: Partial<Record<AssetExtractType, boolean>>
     scope: ExtractModalScope
     overwrite?: boolean
+    extractScope: AssetExtractScope
   }
 ) {
   void (async () => {
-    const { agents, modelCodes, scope } = payload
+    const { agents, modelCodes, scope, extractScope } = payload
     const overwrite = payload.overwrite === true
     const manualModelPickByKind = payload.manualModelPickByKind ?? {}
     const flowCtxAtStart = getExtractFlowContextKey(runtime)
@@ -68,7 +73,11 @@ export function startExtractAssets(
       finishExtracting()
       return
     }
-    if (!hasStoryScript()) {
+    if (
+      !hasStoryScript() &&
+      extractScope !== 'PROJECT_FULL' &&
+      extractScope !== 'PROJECT_OUTLINE'
+    ) {
       message.warning('剧本内容为空，无法提取')
       finishExtracting()
       return
@@ -93,7 +102,8 @@ export function startExtractAssets(
       const estimate = await userAssetExtractEstimate({
         projectId: ctx.projectId,
         episodeId: ctx.episodeId,
-        extractTypes
+        extractTypes,
+        extractScope: resolveAssetExtractScopeForTypes(extractScope, extractTypes)
       })
       if ((estimate?.existingCharacterCount ?? 0) > 0 && extractTypes.includes('character')) {
         message.warning('检测到已有角色，提取完成后将按后端规则更新角色列表')
@@ -135,6 +145,7 @@ export function startExtractAssets(
           extractTypes: types,
           modelCodes,
           manualModelPickByKind,
+          extractScope: resolveAssetExtractScopeForTypes(extractScope, types),
           overwrite
         })
         if (!submitBody) throw new Error('缺少项目或剧集信息，无法提交提取任务')
@@ -341,7 +352,28 @@ export function startExtractAssets(
         runtime.extractStopRequested.value = false
       } else if (!isBenignExtractStreamAbortError(e)) {
         const err = e as { msg?: string; message?: string }
-        message.error(err?.msg || err?.message || 'AI 提取失败，请稍后重试')
+        const detail = err?.msg || err?.message || 'AI 提取失败，请稍后重试'
+        if (detail.includes('项目总纲触发安全门禁')) {
+          Modal.error({
+            title: '项目总纲未通过安全校验',
+            width: 760,
+            okText: '知道了，去修改总纲',
+            content: createElement(
+              'div',
+              {
+                style: {
+                  maxHeight: '58vh',
+                  overflow: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  lineHeight: 1.75
+                }
+              },
+              detail
+            )
+          })
+        } else {
+          message.error(detail)
+        }
       }
     } finally {
       if (

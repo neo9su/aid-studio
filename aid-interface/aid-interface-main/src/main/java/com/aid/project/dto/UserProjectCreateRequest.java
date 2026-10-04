@@ -26,6 +26,10 @@ public class UserProjectCreateRequest {
     @NotBlank(message = "项目类型不能为空")
     private String projectType;
 
+    /** 内容与发布合规模式：PRIVATE_ADULT / CN_MAINLAND / US_PLATFORMS */
+    @Size(max = 32, message = "内容与发布模式参数过长")
+    private String complianceProfile;
+
     /** 封面图（入参自动剥离域名入库） */
     @MediaUrl
     private String coverUrl;

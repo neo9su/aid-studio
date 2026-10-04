@@ -17,6 +17,15 @@ import { resolveStoryScriptSaveContext } from '~/utils/storyScriptSaveContext'
 import type { VideoModalCtx } from './types'
 
 export function useVideoModalRecordRefreshOps(ctx: VideoModalCtx) {
+  function latestVideoIndex(items: any[]): number {
+    if (!items.length) return -1
+    return items.reduce((best, item, index) => {
+      const currentId = Number(item?._serverRow?.id ?? item?.id ?? 0)
+      const bestId = Number(items[best]?._serverRow?.id ?? items[best]?.id ?? 0)
+      return currentId > bestId ? index : best
+    }, 0)
+  }
+
   function mapRecordRowToImageItem(r: StoryboardRecordRow): any {
     const url = (r.fileUrl || '').trim()
     return {
@@ -69,6 +78,7 @@ export function useVideoModalRecordRefreshOps(ctx: VideoModalCtx) {
       title: label,
       source: resolveStoryboardVideoSourceLabel({ _fromServer: true, _serverRow: r }),
       importDate: r.createTime || undefined,
+      submittedPrompt: r.promptText || undefined,
       isStoryboardVideo: r.isSelected === 1 && isOriginalStoryboardVideoRecord(r),
       _generating: isPendingStoryboardRecord(r),
       _fromServer: true,
@@ -115,6 +125,23 @@ export function useVideoModalRecordRefreshOps(ctx: VideoModalCtx) {
     if (!Number.isFinite(id) || id <= 0) return
     try {
       const rows = await fetchProjectRecordsForStoryboard(id, 'video', { force: options?.force })
+      const latestPromptRow = [...rows]
+        .filter((row) => String(row.promptText || '').trim())
+        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0]
+      if (latestPromptRow) {
+        const key = String(id)
+        const current = ctx.submittedVideoPromptByStoryboardId.get()[key]
+        if (!current || Number(latestPromptRow.id || 0) >= Number(current.recordId || 0)) {
+          ctx.submittedVideoPromptByStoryboardId.set({
+            ...ctx.submittedVideoPromptByStoryboardId.get(),
+            [key]: {
+              prompt: String(latestPromptRow.promptText || '').trim(),
+              submittedAt: latestPromptRow.createTime || undefined,
+              recordId: Number(latestPromptRow.id || 0) || undefined
+            }
+          })
+        }
+      }
       const mapped = ctx.finalizeMappedVideosWhileGenerating(
         sceneIdx,
         rows
@@ -125,7 +152,7 @@ export function useVideoModalRecordRefreshOps(ctx: VideoModalCtx) {
       if (isSameVideoRecordList(mapped, prevVideos)) {
         if (sceneIdx !== ctx.currentSceneIndex.get()) return
         if (options?.focusLatest && mapped.length > 0) {
-          const latestIdx = mapped.length - 1
+          const latestIdx = latestVideoIndex(mapped)
           ctx.selectedVideoIdx.set(latestIdx)
           ctx.scrollVideoCanvasToIndex(sceneIdx, latestIdx)
         }
@@ -143,7 +170,7 @@ export function useVideoModalRecordRefreshOps(ctx: VideoModalCtx) {
       }
 
       if (options?.focusLatest && mapped.length > 0) {
-        const latestIdx = mapped.length - 1
+        const latestIdx = latestVideoIndex(mapped)
         ctx.selectedVideoIdx.set(latestIdx)
         ctx.scrollVideoCanvasToIndex(sceneIdx, latestIdx)
       }

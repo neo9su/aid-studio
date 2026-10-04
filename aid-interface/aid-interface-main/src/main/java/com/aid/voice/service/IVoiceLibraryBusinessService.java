@@ -25,6 +25,9 @@ public interface IVoiceLibraryBusinessService
      */
     IPage<VoiceLibraryVO> listForClient(VoiceLibraryListRequest request);
 
+    /** C 端分页列表；公共音色 + 当前用户自己的克隆音色。 */
+    IPage<VoiceLibraryVO> listForClient(VoiceLibraryListRequest request, Long userId);
+
     /**
      * 单条详情（后台用，包含状态等管理字段）
      */

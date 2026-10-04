@@ -22,6 +22,6 @@ public class UserScriptUploadRequest {
     /** 集数ID：电影传0；剧集传具体集ID=单集上传；不传/传0=整篇导入 */
     private Long episodeId;
 
-    /** 剧本文件（仅 .txt） */
+    /** 剧本文件（.txt / .md） */
     private MultipartFile file;
 }

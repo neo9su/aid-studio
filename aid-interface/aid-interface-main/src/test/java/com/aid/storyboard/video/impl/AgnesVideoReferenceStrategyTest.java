@@ -53,6 +53,17 @@ class AgnesVideoReferenceStrategyTest {
                                 reference(5, "ref-5")))));
     }
 
+    @Test
+    void referenceCapabilityCountsRepeatedUrlOnlyOnce() {
+        VideoReferencePlan plan = strategy.assemble(context("reference_to_video", "base",
+                List.of(reference(1, "base"), reference(2, "ref-2"),
+                        reference(3, "ref-2"), reference(4, "ref-4"),
+                        reference(5, "ref-5"), reference(6, "ref-6"))));
+
+        assertEquals(List.of("base", "ref-2", "ref-4", "ref-5", "ref-6"),
+                plan.getReferenceImageUrls());
+    }
+
     private VideoReferenceContext context(String capability, String base,
                                           List<ResolvedReference> references) {
         AiModelConfigVo config = new AiModelConfigVo();

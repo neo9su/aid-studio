@@ -9,6 +9,7 @@ patchEmptyResolvedPromptAssets
 } from '~/utils/storyboardPromptAssetRef'
 import { buildStoryboardVideoResolutionField } from '~/utils/storyboardVideoGenerateParams'
 import {
+buildVideoPromptDurationWarning,
 validateEdgeVideoPromptPlain,
 validateGridVideoPromptPlain,
 validateImageToVideoPromptPlain,
@@ -20,10 +21,25 @@ import {
   parseReferenceVideoCapability,
   validateReferenceVideoCount
 } from '~/utils/referenceVideoCapability'
+import { buildFaceSwapExecutionPrompt, supportsFaceSwap } from '~/utils/faceSwapCapability'
 import type { VideoModalCtx,VideoModalGenerateActionsApi } from './types'
 
 /** 各出片方向的 body 组装 / 校验 / 开始生成入口（拆自 useVideoModalGenerate，超 800 行体量红线） */
 export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
+  function captureSubmittedPrompt(prompt: string, modelName: string) {
+    const storyboardId = ctx.currentStoryboardId()
+    const text = String(prompt || '').trim()
+    if (!storyboardId || !text) return
+    ctx.submittedVideoPromptByStoryboardId.set({
+      ...ctx.submittedVideoPromptByStoryboardId.get(),
+      [String(storyboardId)]: {
+        prompt: text,
+        submittedAt: new Date().toISOString(),
+        modelName: String(modelName || '').trim() || undefined
+      }
+    })
+  }
+
   // ---------- 各出片方向：组装 body 并提交 ----------
 
   async function runStoryboardImageVideoGenerateTaskForScene(opts: {
@@ -68,6 +84,7 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
     }
 
     persistVideoGenerateSettings(modelName)
+    captureSubmittedPrompt(String(body.videoPrompt || ''), modelName)
 
     await ctx.runStoryboardVideoGenerateForScene(opts.sceneIdx, {
       taskKind: 'i2v',
@@ -95,6 +112,7 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
       message.warning('请先选择多参生视频模型')
       return
     }
+    const faceSwap = ctx.faceSwapEnabled.get() && supportsFaceSwap(ctx.activeVideoRawModel())
     const referenceVideoCheck = validateReferenceVideoCount(
       parseReferenceVideoCapability(ctx.activeVideoRawModel()),
       ctx.referenceVideos.get().length
@@ -116,11 +134,31 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
       patchEmptyResolvedPromptAssets(ctx.resolvedMultiParamPromptAssets.get(), localAssets),
       localAssets
     )
-    const referenceOverrides = buildStoryboardVideoReferenceOverrides(promptPlain, mergedAssets)
+    if (faceSwap) {
+      if (localAssets.length !== 1) {
+        message.warning('精准换脸需要且只能导入一张清晰正脸人物图')
+        return
+      }
+      if (ctx.referenceVideos.get().length !== 1) {
+        message.warning('精准换脸需要且只能导入一个目标视频')
+        return
+      }
+      if (ctx.referenceAudios.get().length) {
+        message.warning('精准换脸会保留目标视频音轨，请移除参考音频')
+        return
+      }
+    }
+    const executionPrompt = faceSwap
+      ? buildFaceSwapExecutionPrompt(promptPlain, localAssets[0]!, ctx.referenceVideos.get()[0]!)
+      : promptPlain
+    const referenceOverrides = buildStoryboardVideoReferenceOverrides(
+      executionPrompt,
+      faceSwap ? localAssets : mergedAssets
+    )
     const body = {
       storyboardIds: [storyboardId],
       modelName,
-      videoPrompt: promptPlain || undefined,
+      videoPrompt: executionPrompt || undefined,
       ...(Object.keys(referenceOverrides).length ? { referenceOverrides } : {}),
       aspectRatio: ctx.videoAspectRatio.get() || undefined,
       durationSeconds:
@@ -132,10 +170,12 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
       generateAudio: ctx.resolveCurrentGenerateAudio(),
       ...buildGenerateReferenceAudioFields(ctx.referenceAudios.get()),
       ...buildGenerateReferenceVideoFields(ctx.referenceVideos.get()),
+      ...(faceSwap ? { faceSwap: true } : {}),
       userInputText: opts.userInputText
     }
 
     persistVideoGenerateSettings(modelName)
+    captureSubmittedPrompt(executionPrompt, modelName)
 
     await ctx.runStoryboardVideoGenerateForScene(opts.sceneIdx, {
       taskKind: 'multi',
@@ -182,6 +222,7 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
     }
 
     persistVideoGenerateSettings(modelName)
+    captureSubmittedPrompt(String(body.videoPrompt || ''), modelName)
 
     await ctx.runStoryboardVideoGenerateForScene(opts.sceneIdx, {
       taskKind: 'grid',
@@ -238,6 +279,7 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
     }
 
     if (modelName) persistVideoGenerateSettings(modelName)
+    captureSubmittedPrompt(promptPlain, modelName)
 
     await ctx.runStoryboardVideoGenerateForScene(opts.sceneIdx, {
       taskKind: 'edge',
@@ -318,14 +360,24 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
   async function handleMultiParamStartGenerate() {
     if (ctx.showMultiParamGenerateLoadingGet()) return
     const promptPlain = ctx.multiParamPromptPlain().trim()
-    if (!promptPlain) {
+    const faceSwap = ctx.faceSwapEnabled.get() && supportsFaceSwap(ctx.activeVideoRawModel())
+    if (!promptPlain && !faceSwap) {
       message.warning('请输入描述内容，或先生成提示词')
       return
     }
-    const validation = validateMultiParamVideoPromptPlain(promptPlain)
-    if (validation.ok === false) {
-      message.warning(validation.message)
-      return
+    if (!faceSwap) {
+      const validation = validateMultiParamVideoPromptPlain(promptPlain)
+      if (validation.ok === false) {
+        message.warning(validation.message)
+        return
+      }
+      const durationWarning = buildVideoPromptDurationWarning(
+        promptPlain,
+        ctx.videoConfigShowDuration() ? ctx.videoDuration.get() : null
+      )
+      if (durationWarning) {
+        message.warning(durationWarning, 8)
+      }
     }
     if (!ctx.currentStoryboardId()) {
       message.warning('分镜ID缺失，无法发起生成')
@@ -334,8 +386,8 @@ export function useVideoModalGenerateActions(ctx: VideoModalCtx): void {
     const supplementary = ctx.multiParamShootingTechnique.get()?.value?.trim().slice(0, 500)
     await runStoryboardMultiVideoGenerateTaskForScene({
       sceneIdx: ctx.currentSceneIndex.get(),
-      progressSubmit: '多参生视频任务提交中…',
-      progressRunning: '多参视频生成中…',
+      progressSubmit: faceSwap ? '精准换脸任务提交中…' : '多参生视频任务提交中…',
+      progressRunning: faceSwap ? '精准换脸处理中…' : '多参视频生成中…',
       videoPrompt: promptPlain,
       userInputText: supplementary || undefined
     })

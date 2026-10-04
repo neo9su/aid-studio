@@ -42,6 +42,10 @@ import {
   PROJECT_CONFIG_ASSETS_STYLE_LOCK_HINT
 } from '~/utils/projectConfigAssetGuard'
 import { assetUrl } from '~/utils/assetUrl'
+import {
+  PROJECT_COMPLIANCE_PROFILE_OPTIONS,
+  type ProjectComplianceProfile
+} from '~/utils/projectComplianceProfile'
 import './create-first-step-form-body.css'
 
 const ratio16by9Icon = assetUrl(ratio16by9IconMod)
@@ -89,6 +93,7 @@ export interface CreateFirstStepFormBodyProps {
   onScriptTypeChange: (value: ScriptTypeValue) => void
   onModelStrategyChange: (value: StrategyValue) => void
   onCreationModeChange: (value: CreationModeValue) => void
+  onComplianceProfileChange: (value: ProjectComplianceProfile) => void
   onModelValueChange: (value: GlobalSettingData) => void
 }
 
@@ -167,6 +172,7 @@ export function CreateFirstStepFormBody({
   onScriptTypeChange,
   onModelStrategyChange,
   onCreationModeChange,
+  onComplianceProfileChange,
   onModelValueChange
 }: CreateFirstStepFormBodyProps) {
   // 事件回调 / async 流程读最新 props（等价于 Vue props 响应式引用）
@@ -179,6 +185,7 @@ export function CreateFirstStepFormBody({
     onScriptTypeChange,
     onModelStrategyChange,
     onCreationModeChange,
+    onComplianceProfileChange,
     onModelValueChange
   })
   emitRef.current = {
@@ -188,6 +195,7 @@ export function CreateFirstStepFormBody({
     onScriptTypeChange,
     onModelStrategyChange,
     onCreationModeChange,
+    onComplianceProfileChange,
     onModelValueChange
   }
 
@@ -245,6 +253,10 @@ export function CreateFirstStepFormBody({
   const displayScriptType = isNewProjectModal ? leftPanelDraft.scriptType : scriptType
   const displayModelStrategy = isNewProjectModal ? leftPanelDraft.modelStrategy : modelStrategy
   const displayCreationMode = isNewProjectModal ? leftPanelDraft.creationMode : creationMode
+  const selectedComplianceOption =
+    PROJECT_COMPLIANCE_PROFILE_OPTIONS.find(
+      (option) => option.value === modelValue.complianceProfile
+    ) ?? PROJECT_COMPLIANCE_PROFILE_OPTIONS[1]!
 
   const { ensureLoaded: ensureDictLoaded, loaded: dictLoaded, enumList } = usePromptDictionary()
 
@@ -533,6 +545,29 @@ export function CreateFirstStepFormBody({
               />
               <span className="count-text">{title.length}/25</span>
             </div>
+          </div>
+
+          <div className="field-group compliance-profile-field">
+            <label className="field-label">内容与发布模式</label>
+            <select
+              className="compliance-profile-select"
+              value={selectedComplianceOption.value}
+              onChange={(event) =>
+                emitRef.current.onComplianceProfileChange(
+                  event.target.value as ProjectComplianceProfile
+                )
+              }
+            >
+              {PROJECT_COMPLIANCE_PROFILE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} · {option.badge}
+                </option>
+              ))}
+            </select>
+            <p className="compliance-profile-description">
+              {selectedComplianceOption.description}
+              <span> 所有模式均保留法律与安全底线。</span>
+            </p>
           </div>
 
           <div className="field-group">

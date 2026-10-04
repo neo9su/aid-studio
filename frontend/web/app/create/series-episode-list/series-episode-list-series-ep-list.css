@@ -98,6 +98,25 @@
   cursor: not-allowed;
 }
 
+.series-ep-list__asset-actions,
+.series-ep-list__asset-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.series-ep-list__add--primary {
+  color: #07131c;
+  border-color: #4ae7fd;
+  background: #4ae7fd;
+}
+
+.series-ep-list__add--primary:hover:not(:disabled) {
+  color: #07131c;
+  background: #7ceffc;
+}
+
 .series-ep-list__body {
   flex: 1;
   min-height: 0;

@@ -25,6 +25,7 @@ export const MATERIAL_CATEGORIES: MaterialCategory[] = [
   { key: 'pose', label: '姿势库' },
   { key: 'effect', label: '特效库' },
   { key: 'expression', label: '表情库' },
+  { key: 'mood', label: '情绪神态库' },
   { key: 'draft', label: '手绘稿库' },
   { key: 'misc', label: '其他素材库' },
   { key: 'style', label: '风格库' }

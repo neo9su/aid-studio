@@ -9,6 +9,7 @@ export const MATERIAL_CATEGORY_ROWS: Array<{ key: string; label: string; apiType
   { key: 'pose', label: '姿势库', apiType: 'pose' },
   { key: 'effect', label: '特效库', apiType: 'effect' },
   { key: 'expression', label: '表情库', apiType: 'expression' },
+  { key: 'mood', label: '情绪神态库', apiType: 'mood' },
   /** 接口暂无独立类型时与 file 共用统计 */
   { key: 'draft', label: '手绘稿库', apiType: 'file' },
   { key: 'misc', label: '其他素材库', apiType: 'file' },

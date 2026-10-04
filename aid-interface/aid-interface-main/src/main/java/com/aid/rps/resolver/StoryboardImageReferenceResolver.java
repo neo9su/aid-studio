@@ -18,7 +18,9 @@ import java.util.Set;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.aid.aid.domain.AidRolePropScene;
+import com.aid.aid.domain.AidRolePropSceneForm;
 import com.aid.aid.domain.AidRolePropSceneFormImage;
+import com.aid.aid.service.IAidRolePropSceneFormService;
 import com.aid.aid.service.IAidRolePropSceneFormImageService;
 import com.aid.aid.service.IAidRolePropSceneService;
 import com.aid.common.aid.oss.util.MediaUrlResolver;
@@ -62,6 +64,9 @@ public class StoryboardImageReferenceResolver
 
     @Autowired
     private IAidRolePropSceneService rpsService;
+
+    @Autowired
+    private IAidRolePropSceneFormService rpsFormService;
 
     /** MediaUrlResolver：DB 存相对路径，下游需完整 URL。 */
     @Autowired
@@ -114,6 +119,31 @@ public class StoryboardImageReferenceResolver
         return resolve(imagePrompt, projectId, userId, List.of());
     }
 
+    /** 当前项目所有已启用参考图可接受的稳定名称（图片名 + 形态名 + 资产名）。 */
+    public List<String> loadReferenceableNames(Long projectId, Long userId)
+    {
+        if (projectId == null || userId == null)
+        {
+            return List.of();
+        }
+        List<AidRolePropSceneFormImage> images = rpsFormImageService.list(
+                Wrappers.<AidRolePropSceneFormImage>lambdaQuery()
+                        .select(AidRolePropSceneFormImage::getId,
+                                AidRolePropSceneFormImage::getFormId,
+                                AidRolePropSceneFormImage::getAssetId,
+                                AidRolePropSceneFormImage::getName,
+                                AidRolePropSceneFormImage::getImageUrl,
+                                AidRolePropSceneFormImage::getSortOrder)
+                        .eq(AidRolePropSceneFormImage::getProjectId, projectId)
+                        .eq(AidRolePropSceneFormImage::getUserId, userId)
+                        .eq(AidRolePropSceneFormImage::getIsUse, IS_USE_YES)
+                        .eq(AidRolePropSceneFormImage::getIsSplitSource, IS_SPLIT_SOURCE_NO)
+                        .eq(AidRolePropSceneFormImage::getDelFlag, DEL_FLAG_NORMAL)
+                        .orderByAsc(AidRolePropSceneFormImage::getSortOrder)
+                        .orderByAsc(AidRolePropSceneFormImage::getId));
+        return new ArrayList<>(buildImageNameIndex(images, projectId, userId).keySet());
+    }
+
     /** 按“已启用 + 正式提交计划待启用”快照解析，供正式提交与只读报价共用。 */
     public ResolveResult resolve(String imagePrompt, Long projectId, Long userId,
                                  Collection<Long> additionallyEnabledIds)
@@ -147,6 +177,8 @@ public class StoryboardImageReferenceResolver
         Set<Long> plannedIds = normalizedIds(additionallyEnabledIds);
         var query = Wrappers.<AidRolePropSceneFormImage>lambdaQuery()
                 .select(AidRolePropSceneFormImage::getId,
+                        AidRolePropSceneFormImage::getFormId,
+                        AidRolePropSceneFormImage::getAssetId,
                         AidRolePropSceneFormImage::getName,
                         AidRolePropSceneFormImage::getImageUrl,
                         AidRolePropSceneFormImage::getSortOrder)
@@ -168,15 +200,7 @@ public class StoryboardImageReferenceResolver
         List<AidRolePropSceneFormImage> imgs = rpsFormImageService.list(query);
 
         // 同 name 多图时按 sort_order 升序取首张 image_url 非空的；key 统一 trim + 分隔符归一化
-        Map<String, AidRolePropSceneFormImage> byName = new LinkedHashMap<>();
-        if (CollectionUtil.isNotEmpty(imgs))
-        {
-            for (AidRolePropSceneFormImage img : imgs)
-            {
-                if (StrUtil.isBlank(img.getImageUrl())) { continue; }
-                byName.putIfAbsent(normalizeAssetRefName(img.getName()), img);
-            }
-        }
+        Map<String, AidRolePropSceneFormImage> byName = buildImageNameIndex(imgs, projectId, userId);
 
         List<Long> ids = new ArrayList<>();
         List<String> urls = new ArrayList<>();
@@ -265,6 +289,7 @@ public class StoryboardImageReferenceResolver
         Set<Long> plannedIds = normalizedIds(additionallyEnabledIds);
         var query = Wrappers.<AidRolePropSceneFormImage>lambdaQuery()
                 .select(AidRolePropSceneFormImage::getId,
+                        AidRolePropSceneFormImage::getFormId,
                         AidRolePropSceneFormImage::getName,
                         AidRolePropSceneFormImage::getImageUrl,
                         AidRolePropSceneFormImage::getAssetId,
@@ -287,15 +312,14 @@ public class StoryboardImageReferenceResolver
         List<AidRolePropSceneFormImage> imgs = rpsFormImageService.list(query);
 
         // 同 name 取首张「image_url 非空」的（与 resolve / 白名单口径一致）；key 统一 trim + 分隔符归一化
-        Map<String, AidRolePropSceneFormImage> byName = new LinkedHashMap<>();
+        Map<String, AidRolePropSceneFormImage> byName = buildImageNameIndex(imgs, projectId, userId);
         Set<Long> assetIds = new HashSet<>();
         if (CollectionUtil.isNotEmpty(imgs))
         {
             for (AidRolePropSceneFormImage img : imgs)
             {
                 if (StrUtil.isBlank(img.getImageUrl())) { continue; }
-                AidRolePropSceneFormImage prev = byName.putIfAbsent(normalizeAssetRefName(img.getName()), img);
-                if (Objects.isNull(prev) && Objects.nonNull(img.getAssetId()))
+                if (Objects.nonNull(img.getAssetId()))
                 {
                     assetIds.add(img.getAssetId());
                 }
@@ -350,6 +374,69 @@ public class StoryboardImageReferenceResolver
             out.add(ref);
         }
         return out;
+    }
+
+    /**
+     * 建立参考图的稳定别名索引。除图片行名称外，同时接受形态名、资产名以及“资产_形态”名，
+     * 避免导入页面标题被误写入 form_image.name 后让提示词无法匹配真实角色图。
+     */
+    private Map<String, AidRolePropSceneFormImage> buildImageNameIndex(
+            List<AidRolePropSceneFormImage> images, Long projectId, Long userId)
+    {
+        Map<String, AidRolePropSceneFormImage> byName = new LinkedHashMap<>();
+        if (CollectionUtil.isEmpty(images))
+        {
+            return byName;
+        }
+        Set<Long> formIds = images.stream().map(AidRolePropSceneFormImage::getFormId)
+                .filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Set<Long> assetIds = images.stream().map(AidRolePropSceneFormImage::getAssetId)
+                .filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Map<Long, String> formNames = CollectionUtil.isEmpty(formIds) ? Map.of()
+                : rpsFormService.list(Wrappers.<AidRolePropSceneForm>lambdaQuery()
+                        .select(AidRolePropSceneForm::getId, AidRolePropSceneForm::getName)
+                        .in(AidRolePropSceneForm::getId, formIds)
+                        .eq(AidRolePropSceneForm::getProjectId, projectId)
+                        .eq(AidRolePropSceneForm::getUserId, userId)
+                        .eq(AidRolePropSceneForm::getDelFlag, DEL_FLAG_NORMAL)).stream()
+                        .filter(form -> StrUtil.isNotBlank(form.getName()))
+                        .collect(java.util.stream.Collectors.toMap(
+                                AidRolePropSceneForm::getId, AidRolePropSceneForm::getName));
+        Map<Long, String> assetNames = CollectionUtil.isEmpty(assetIds) ? Map.of()
+                : rpsService.list(Wrappers.<AidRolePropScene>lambdaQuery()
+                        .select(AidRolePropScene::getId, AidRolePropScene::getName)
+                        .in(AidRolePropScene::getId, assetIds)
+                        .eq(AidRolePropScene::getProjectId, projectId)
+                        .eq(AidRolePropScene::getUserId, userId)
+                        .eq(AidRolePropScene::getDelFlag, DEL_FLAG_NORMAL)).stream()
+                        .filter(asset -> StrUtil.isNotBlank(asset.getName()))
+                        .collect(java.util.stream.Collectors.toMap(
+                                AidRolePropScene::getId, AidRolePropScene::getName));
+        for (AidRolePropSceneFormImage image : images)
+        {
+            if (StrUtil.isBlank(image.getImageUrl())) { continue; }
+            putImageAlias(byName, image.getName(), image);
+            String formName = formNames.get(image.getFormId());
+            String assetName = assetNames.get(image.getAssetId());
+            putImageAlias(byName, formName, image);
+            putImageAlias(byName, assetName, image);
+            if (StrUtil.isNotBlank(assetName) && StrUtil.isNotBlank(formName)
+                    && !Objects.equals(normalizeAssetRefName(assetName), normalizeAssetRefName(formName)))
+            {
+                putImageAlias(byName, assetName + "_" + formName, image);
+            }
+        }
+        return byName;
+    }
+
+    private static void putImageAlias(Map<String, AidRolePropSceneFormImage> target,
+                                      String alias, AidRolePropSceneFormImage image)
+    {
+        String key = normalizeAssetRefName(alias);
+        if (StrUtil.isNotBlank(key))
+        {
+            target.putIfAbsent(key, image);
+        }
     }
 
     private static Set<Long> normalizedIds(Collection<Long> ids)

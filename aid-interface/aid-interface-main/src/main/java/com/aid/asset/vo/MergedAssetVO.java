@@ -7,6 +7,7 @@ import com.aid.aid.vo.StyleCategoryVO;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
+import java.util.Date;
 
 /**
  * 合并资产列表项 VO（个人 + 官方）。
@@ -36,6 +37,9 @@ public class MergedAssetVO {
     /** 提示词内容 */
     private String promptText;
 
+    /** 特征描述/生成约束 */
+    private String personalityDesc;
+
     /** 主图 URL（出参拼域名） */
     @MediaUrl
     private String imageUrl;
@@ -48,4 +52,13 @@ public class MergedAssetVO {
 
     /** 展示排序号 */
     private Long sortOrder;
+
+    /** 来源类型。 */
+    private String sourceType;
+
+    /** 备注。 */
+    private String remark;
+
+    /** 创建时间。 */
+    private Date createTime;
 }

@@ -7,6 +7,12 @@ export interface ScpCharacterImagesApi {
   handleAutoGenerateCharacter: (index: number) => void
   handleImportCharacterFormImage: (characterIndex: number, formIndex: number) => void
   handleCharacterFormImageImport: (fileOrAsset: File | string | any) => Promise<void>
+  handleCharacterFormImageImportTo: (
+    characterIndex: number,
+    formIndex: number,
+    fileOrAsset: File | string | any,
+    options?: { quiet?: boolean; strict?: boolean }
+  ) => Promise<void>
   handleEditCharacterFormImage: (characterIndex: number, formIndex: number) => void
   handleEditCharacterFormImageWithIndex: (
     characterIndex: number,

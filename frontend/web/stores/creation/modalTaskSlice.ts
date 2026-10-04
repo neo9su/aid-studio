@@ -8,6 +8,7 @@ StoryboardVideoGenTaskSnapshot,
 StoryboardVideoPromptGenTaskKind,
 StoryboardVideoPromptGenTaskSnapshot
 } from './types'
+import type { TaskEtaProgress } from '~/utils/taskSseProgressText'
 
 export interface ModalTaskActions {
   setStoryboardImageGenTask: (
@@ -19,6 +20,8 @@ export interface ModalTaskActions {
       imageIdx?: number
       message?: string
       stepTitle?: string
+      progress?: number
+      eta?: TaskEtaProgress
     },
     scopeKey?: string
   ) => void
@@ -59,6 +62,8 @@ export interface ModalTaskActions {
       taskKind: 'i2v' | 'multi' | 'edge' | 'grid'
       message?: string
       stepTitle?: string
+      progress?: number
+      eta?: TaskEtaProgress
     },
     scopeKey?: string
   ) => void
@@ -289,6 +294,8 @@ export function createModalTaskSlice(_set: CreationSet, get: CreationGet): Modal
         taskKind: 'i2v' | 'multi' | 'edge' | 'grid'
         message?: string
         stepTitle?: string
+        progress?: number
+        eta?: TaskEtaProgress
       },
       scopeKey?: string
     ) {
@@ -302,6 +309,10 @@ export function createModalTaskSlice(_set: CreationSet, get: CreationGet): Modal
       const msg = String(payload.message ?? prev?.message ?? '').trim()
       const step = String(payload.stepTitle ?? prev?.stepTitle ?? '').trim()
       const taskKind = payload.taskKind ?? prev?.taskKind ?? 'i2v'
+      const sameTask = Number(prev?.taskId) === tid
+      const progressRaw = payload.progress ?? (sameTask ? prev?.progress : undefined)
+      const progress = Number(progressRaw)
+      const eta = payload.eta ?? (sameTask ? prev?.eta : undefined)
       get().mergeStep4PlusLiveGenForScopeKey(key, {
         storyboardVideoGenTasksByStoryboardId: {
           ...(base.storyboardVideoGenTasksByStoryboardId || {}),
@@ -310,7 +321,9 @@ export function createModalTaskSlice(_set: CreationSet, get: CreationGet): Modal
             sceneIdx: Number.isFinite(sceneIdx) ? sceneIdx : 0,
             taskKind,
             ...(msg ? { message: msg } : {}),
-            ...(step ? { stepTitle: step } : {})
+            ...(step ? { stepTitle: step } : {}),
+            ...(Number.isFinite(progress) ? { progress: Math.max(0, Math.min(100, progress)) } : {}),
+            ...(eta ? { eta } : {})
           }
         }
       })

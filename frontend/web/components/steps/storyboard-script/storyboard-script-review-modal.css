@@ -1,0 +1,97 @@
+.storyboard-script-review-modal .ant-modal-body {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.storyboard-review-applied {
+  margin-top: 10px;
+}
+
+.storyboard-review-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.storyboard-review-card {
+  padding: 14px;
+  border: 1px solid rgba(81, 217, 235, 0.28);
+  border-radius: 12px;
+  background: rgba(7, 17, 28, 0.58);
+}
+
+.storyboard-review-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.storyboard-review-reason {
+  margin: 10px 0;
+  padding: 9px 12px;
+  border-left: 3px solid #40d7ee;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(64, 215, 238, 0.08);
+}
+
+.storyboard-review-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.storyboard-review-version {
+  min-height: 150px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.storyboard-review-version.is-selected {
+  border-color: rgba(64, 215, 238, 0.8);
+  box-shadow: inset 0 0 0 1px rgba(64, 215, 238, 0.2);
+}
+
+.storyboard-review-version.is-empty {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.storyboard-review-field {
+  margin-top: 10px;
+}
+
+.storyboard-review-field-label {
+  display: block;
+  margin-bottom: 3px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+}
+
+.storyboard-review-field p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
+
+.storyboard-review-field mark {
+  padding: 1px 2px;
+  color: inherit;
+  background: rgba(255, 183, 77, 0.3);
+  border-radius: 2px;
+}
+
+.storyboard-review-manual {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .storyboard-review-columns {
+    grid-template-columns: 1fr;
+  }
+}

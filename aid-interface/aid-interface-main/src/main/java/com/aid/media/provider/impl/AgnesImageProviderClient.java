@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.aid.common.constant.HttpConstants;
+import com.aid.common.aid.oss.util.MediaUrlResolver;
 import com.aid.common.utils.ProviderEndpointUtils;
 import com.aid.common.oss.entity.UploadResult;
 import com.aid.common.oss.factory.OssFactory;
@@ -54,6 +55,10 @@ public class AgnesImageProviderClient implements ImageProviderClient {
     /** 图片参考渲染策略路由器：按 providerCode 渲染参考引用（manifest 存在时使用）。 */
     @Autowired
     private ImageReferenceRenderPlanner imageReferenceRenderPlanner;
+
+    /** 把库内 /profile 相对路径转换为 Provider 可读取的完整地址。 */
+    @Autowired
+    private MediaUrlResolver mediaUrlResolver;
 
     /** 图片生成超时（毫秒）：Agnes 文档建议 60s-360s，这里取 300s */
     private static final int IMAGE_TIMEOUT_MS = 300_000;
@@ -177,11 +182,10 @@ public class AgnesImageProviderClient implements ImageProviderClient {
         if (!images.isEmpty()) {
             // 图生图 / 多图：image[] 与 response_format 都必须放进 extra_body（Agnes 官方写法，
             //   放顶层 image 会被网关忽略 → 退化成文生图、出图与参考图无关）。
-            // 参考图输入默认公网 URL；模型 capability 开启 base64 传图时下载转 Data URI 内联下发
-            //   （官方 image 支持「公网 URL 或 Data URI Base64」），用于网关无法回源业务 CDN 的场景。
-            List<String> effectiveImages = images;
+            // 参考图输入默认公网 URL；模型 capability 开启 base64 传图时下载转 Data URI 内联下发。
+            List<String> effectiveImages = normalizeReferenceImageUrls(images);
             if (com.aid.media.provider.ReferenceImageBase64Support.isBase64Enabled(modelConfig)) {
-                effectiveImages = com.aid.media.provider.ReferenceImageBase64Support.toDataUris(images);
+                effectiveImages = com.aid.media.provider.ReferenceImageBase64Support.toDataUris(effectiveImages);
                 log.info("Agnes 参考图按 base64 内联下发, model={}, count={}", model, effectiveImages.size());
             }
             Map<String, Object> extraBody = new LinkedHashMap<>();
@@ -195,6 +199,26 @@ public class AgnesImageProviderClient implements ImageProviderClient {
             body.put(AgnesConstants.JSON_EXTRA_BODY, extraBody);
         }
         return body;
+    }
+
+    /**
+     * Agnes 接口不能识别库内保存的 /profile 相对路径。data URI 已经是完整输入，保持原样；
+     * 其他地址交给统一媒体 URL 解析器补齐本站域名，再按模型开关决定是否转 base64。
+     */
+    List<String> normalizeReferenceImageUrls(List<String> images) {
+        if (images == null || images.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> normalized = new ArrayList<>(images.size());
+        for (String image : images) {
+            if (StringUtils.isBlank(image)) {
+                continue;
+            }
+            String trimmed = image.trim();
+            normalized.add(trimmed.regionMatches(true, 0, "data:", 0, 5)
+                    ? trimmed : mediaUrlResolver.toFullUrl(trimmed));
+        }
+        return normalized;
     }
 
     /** options.referenceManifest 是否存在非空 JSON（决定走渲染策略还是现状逻辑）。 */

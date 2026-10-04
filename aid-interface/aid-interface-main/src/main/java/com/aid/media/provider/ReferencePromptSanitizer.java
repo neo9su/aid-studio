@@ -47,6 +47,9 @@ public final class ReferencePromptSanitizer {
      */
     private static final Pattern AUDIO_REF_PLACEHOLDER = Pattern.compile("@音频(\\d+)\\[([^\\]]*)\\]");
 
+    /** {@code @视频N[name]} 占位，指向随请求下发的第 N 段参考视频。 */
+    private static final Pattern VIDEO_REF_PLACEHOLDER = Pattern.compile("@视频(\\d+)\\[([^\\]]*)\\]");
+
     /**
      * 音频占位名的固定前缀（业务层写作 {@code [音频-角色名]}）。
      * 文字降级时剥掉该前缀，让「白素贞的音色参考@音频1[音频-白素贞]」退化成读得通的
@@ -238,10 +241,18 @@ public final class ReferencePromptSanitizer {
                 "Picture", imageCount, null);
         cleaned = applyAgnes25Placeholder(cleaned, AUDIO_REF_PLACEHOLDER,
                 "Audio", audioCount, AUDIO_NAME_PREFIX);
+        cleaned = applyAgnes25Placeholder(cleaned, VIDEO_REF_PLACEHOLDER,
+                "Video", videoCount, null);
         cleaned = rewriteAgnes25ChineseRefs(cleaned, imageCount, videoCount, audioCount);
         cleaned = rewriteAgnes25IndexedRefs(cleaned, imageCount, videoCount, audioCount);
         cleaned = rewriteAgnes25OfficialRefs(cleaned, imageCount, videoCount, audioCount);
         return STRAY_AT_MARKER.matcher(cleaned).replaceAll("").strip();
+    }
+
+    /** MiniMax H3 多模态节点与 Agnes 2.5 使用相同的尖括号素材编号协议。 */
+    public static String sanitizeForMinimaxH3(String prompt, int imageCount,
+                                               int videoCount, int audioCount) {
+        return sanitizeForAgnes25(prompt, imageCount, videoCount, audioCount);
     }
 
     private static String applyAgnes25Placeholder(String prompt, Pattern pattern, String kind,

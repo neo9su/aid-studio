@@ -1,4 +1,5 @@
 import type {
+  AssetExtractScope,
   AssetExtractType,
   UserAssetExtractParallelRequest
 } from '~/types/business-api'
@@ -16,6 +17,21 @@ interface BuildAssetExtractSubmitBodyOptions {
   modelCodes: ExtractModelCodes
   manualModelPickByKind?: Partial<Record<AssetExtractType, boolean>>
   overwrite?: boolean
+  extractScope?: AssetExtractScope
+}
+
+/** 后端约束：PROJECT_FULL 只能单独提交角色，避免场景/道具失去剧集归属。 */
+export function resolveAssetExtractScopeForTypes(
+  requestedScope: AssetExtractScope | undefined,
+  extractTypes: AssetExtractType[]
+): AssetExtractScope {
+  return requestedScope === 'PROJECT_FULL' &&
+    extractTypes.length === 1 &&
+    extractTypes[0] === 'character'
+    ? 'PROJECT_FULL'
+    : requestedScope === 'PROJECT_OUTLINE'
+      ? 'PROJECT_OUTLINE'
+      : 'EPISODE_INCREMENTAL'
 }
 
 /**
@@ -29,6 +45,7 @@ export async function buildAssetExtractSubmitBody(
   if (!context) return null
 
   const extractTypes = [...options.extractTypes]
+  const extractScope = resolveAssetExtractScopeForTypes(options.extractScope, extractTypes)
   const manualModelOverrides: Partial<Record<AssetExtractType, string>> = {}
   for (const type of extractTypes) {
     if (!options.manualModelPickByKind?.[type]) continue
@@ -45,6 +62,7 @@ export async function buildAssetExtractSubmitBody(
     projectId: context.projectId,
     episodeId: context.episodeId,
     extractTypes,
+    extractScope,
     agentCodes: configured.agentCodes,
     ...(configured.modelCodes ? { modelCodes: configured.modelCodes } : {}),
     overwrite: options.overwrite === true

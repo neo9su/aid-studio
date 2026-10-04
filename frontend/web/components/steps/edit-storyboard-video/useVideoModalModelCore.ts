@@ -268,7 +268,10 @@ export function useVideoModalModelCore(ctx: VideoModalCtx) {
     if (!videoConfigShowDuration()) return ''
     // 无 detail 推荐时长时不展示提示，避免把模型默认秒数误当成「推荐最优」
     if (ctx.recommendedDurationSecondsRaw.get() == null) return ''
-    return buildRecommendedDurationTipText(ctx.videoDuration.get(), resolvedRecommendedDurationSeconds())
+    return buildRecommendedDurationTipText(
+      ctx.videoDuration.get(),
+      ctx.recommendedDurationSecondsRaw.get()
+    )
   }
 
   function applyRecommendedVideoDuration() {

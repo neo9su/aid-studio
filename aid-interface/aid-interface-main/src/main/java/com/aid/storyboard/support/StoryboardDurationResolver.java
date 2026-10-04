@@ -191,6 +191,13 @@ public final class StoryboardDurationResolver
         List<Integer> allowed = readDurationOptions(modelConfig);
         if (CollectionUtil.isNotEmpty(allowed) && !allowed.contains(positiveCandidate))
         {
+            int providerMaximum = allowed.get(allowed.size() - 1);
+            if (positiveCandidate > providerMaximum
+                    && positiveCandidate <= StoryboardLongVideoPlanner.MAX_TOTAL_SECONDS
+                    && StoryboardLongVideoPlanner.supports(modelConfig))
+            {
+                return positiveCandidate;
+            }
             log.info("分镜视频时长未命中模型档位: actual={}, allowed={}", positiveCandidate, allowed);
             throw new ServiceException("视频时长不支持");
         }

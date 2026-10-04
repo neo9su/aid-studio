@@ -9,7 +9,11 @@ import {
   userScriptSplitConfirm,
   userScriptSplitPreview
 } from '@/utils/businessApi'
-import { assertScriptPlainTextFile, validateScriptUploadFile } from '@/utils/scriptFileUpload'
+import {
+  assertScriptPlainTextFile,
+  SCRIPT_UPLOAD_ACCEPT,
+  validateScriptUploadFile
+} from '@/utils/scriptFileUpload'
 
 const MAX_SCRIPT_BYTES = 15 * 1024 * 1024
 
@@ -58,7 +62,7 @@ export function StudioFlowSeriesSplitWizard({
       return
     }
     if (file.size > MAX_SCRIPT_BYTES) {
-      message.warning('文件过大，请选择较小的 txt 文件')
+      message.warning('文件过大，请选择较小的 txt 或 md 文件')
       return
     }
     setPendingFile(file)
@@ -139,11 +143,11 @@ export function StudioFlowSeriesSplitWizard({
       onOk={() => void (previewData ? onConfirmSplit() : onPreviewSplit())}
     >
       <div className="studio-flow-series-split">
-        <p>上传剧集总剧本 txt，按「第一集、第二集…」等关键词拆分为多集。</p>
+        <p>上传剧集总剧本 txt/md，按「第一集、第二集…」等关键词拆分为多集。</p>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".txt,text/plain"
+          accept={SCRIPT_UPLOAD_ACCEPT}
           hidden
           onChange={(event) => {
             assignFile(event.target.files?.[0])

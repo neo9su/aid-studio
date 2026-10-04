@@ -1,6 +1,6 @@
 'use client'
 
-import { Button } from 'antd'
+import { Button, Progress } from 'antd'
 import {
   UploadOutlined,
   FolderOutlined,
@@ -184,6 +184,23 @@ function VideoCanvasCard({
             <span className="video-card-generating-mask__text">
               {ctx.videoGenerateProgressText.value}
             </span>
+            {ctx.videoGenerateProgressPercent.value == null ? (
+              <div
+                className="video-card-generating-mask__progress video-card-generating-mask__progress--indeterminate"
+                aria-label="正在等待视频生成进度"
+              >
+                <span />
+              </div>
+            ) : (
+              <Progress
+                className="video-card-generating-mask__progress"
+                percent={ctx.videoGenerateProgressPercent.value}
+                size="small"
+                status="active"
+                strokeColor={{ from: '#24d8f4', to: '#246bff' }}
+                trailColor="rgba(255, 255, 255, 0.12)"
+              />
+            )}
           </div>
         ) : null}
         {v.url && ctx.playingVideoIdx.value !== idx && ctx.videoPreviewMediaReady.value[idx] ? (
@@ -306,6 +323,7 @@ export function VideoStageSkeleton() {
 export function VideoCanvasSection({ ctx }: { ctx: VideoModalCtx }) {
   const videos = ctx.currentSceneVideos()
   const viewMode = ctx.viewMode.value
+  const emptyError = ctx.currentSceneVideoError()
 
   return (
     <section className="stage-canvas-panel video-stage-canvas">
@@ -329,7 +347,11 @@ export function VideoCanvasSection({ ctx }: { ctx: VideoModalCtx }) {
       </div>
       <div ref={ctx.videoCanvasBodyRef} className="video-canvas-body video-canvas-body--enhance-wrap">
         {videos.length === 0 && !ctx.isSceneVideoGenerating(ctx.currentSceneIndex.value) ? (
-          <div className="canvas-empty video-canvas-empty">还没有内容,先去右侧配置并生成吧</div>
+          <div className="canvas-empty video-canvas-empty">
+            {emptyError
+              ? `生成失败：${emptyError}。系统繁忙时会自动重试，也可稍后在右侧重新生成`
+              : '尚未生成视频。请在右侧填写或粘贴视频提示词，然后点击“开始生成视频”'}
+          </div>
         ) : viewMode === 'list' ? (
           <div className="videos-list videos-list--in-canvas">
             {videos.map((v: any, idx: number) => (

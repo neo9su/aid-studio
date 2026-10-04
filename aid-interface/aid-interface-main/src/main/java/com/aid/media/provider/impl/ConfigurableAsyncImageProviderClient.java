@@ -20,6 +20,7 @@ import com.aid.media.provider.ProviderErrorSanitizer;
 import com.aid.media.provider.ProviderResponseHelper;
 import com.aid.media.provider.ProviderSubmitResult;
 import com.aid.media.provider.ProviderTaskResult;
+import com.aid.media.provider.ReferenceImageBase64Support;
 import com.aid.media.provider.ReferenceImageLimiter;
 import com.aid.media.provider.ReferencePromptSanitizer;
 import com.aid.media.util.ModelCapabilityResolver;
@@ -44,7 +45,7 @@ public class ConfigurableAsyncImageProviderClient implements ImageProviderClient
 
     @Override
     public Integer fallbackMaxReferenceImages(AiModelConfigVo modelConfig) {
-        return 1;
+        return 4;
     }
 
     @Override
@@ -54,7 +55,7 @@ public class ConfigurableAsyncImageProviderClient implements ImageProviderClient
         ReferencePromptSanitizer.sanitizeInPlace(request, references.size());
         boolean edit = !references.isEmpty();
         HttpResult response = edit
-                ? submitEdit(modelConfig, request, references.get(0))
+                ? submitEdit(modelConfig, request, references)
                 : submitGeneration(modelConfig, request);
         if (!isSuccess(response.statusCode()) || !JSONUtil.isTypeJSON(response.body())) {
             log.error("可配置异步图片提交失败, modelCode={}, detail={}", modelConfig.getModelCode(),
@@ -195,6 +196,13 @@ public class ConfigurableAsyncImageProviderClient implements ImageProviderClient
                 request == null ? null : request.getModelName()));
         body.put("prompt", request == null ? "" : StrUtil.nullToEmpty(request.getPrompt()));
         body.put("n", resolveImageCount(modelConfig, request));
+        if (request != null && StrUtil.isNotBlank(request.getNegativePrompt())) {
+            body.put("negative_prompt", request.getNegativePrompt().trim());
+        }
+        String aspectRatio = resolveAspectRatio(request);
+        if (StrUtil.isNotBlank(aspectRatio)) {
+            body.put("aspect_ratio", aspectRatio);
+        }
         String size = resolveSize(modelConfig, request);
         if (StrUtil.isNotBlank(size)) {
             body.put("size", size);
@@ -203,14 +211,23 @@ public class ConfigurableAsyncImageProviderClient implements ImageProviderClient
     }
 
     private static HttpResult submitEdit(AiModelConfigVo modelConfig,
-                                         MediaImageGenerateRequest request, String imageUrl) {
-        byte[] imageBytes = downloadReferenceImage(imageUrl);
-        String fileName = resolveFileName(imageUrl);
+                                         MediaImageGenerateRequest request, List<String> imageUrls) {
         HttpRequest httpRequest = applyAuth(HttpRequest.post(buildSubmitUrl(modelConfig, true)), modelConfig)
                 .form("model", ModelCodeResolver.resolveUpstreamModel(modelConfig,
                         request == null ? null : request.getModelName()))
-                .form("prompt", request == null ? "" : StrUtil.nullToEmpty(request.getPrompt()))
-                .form("image", imageBytes, fileName);
+                .form("prompt", request == null ? "" : StrUtil.nullToEmpty(request.getPrompt()));
+        for (int index = 0; index < imageUrls.size(); index++) {
+            String imageUrl = imageUrls.get(index);
+            String fieldName = index == 0 ? "image" : "image_" + (index + 1);
+            httpRequest.form(fieldName, downloadReferenceImage(imageUrl), resolveFileName(imageUrl));
+        }
+        if (request != null && StrUtil.isNotBlank(request.getNegativePrompt())) {
+            httpRequest.form("negative_prompt", request.getNegativePrompt().trim());
+        }
+        String aspectRatio = resolveAspectRatio(request);
+        if (StrUtil.isNotBlank(aspectRatio)) {
+            httpRequest.form("aspect_ratio", aspectRatio);
+        }
         String size = resolveSize(modelConfig, request);
         if (StrUtil.isNotBlank(size)) {
             httpRequest.form("size", size);
@@ -227,6 +244,10 @@ public class ConfigurableAsyncImageProviderClient implements ImageProviderClient
     }
 
     static byte[] downloadReferenceImage(String imageUrl) {
+        byte[] localBytes = ReferenceImageBase64Support.readLocalProfileImageBytes(imageUrl);
+        if (localBytes != null) {
+            return localBytes;
+        }
         if (!ImageUrlValidator.validateImageUrlFormat(imageUrl).isValid()
                 || !ImageUrlValidator.validateRemoteImageUrl(imageUrl).isValid()) {
             throw new ServiceException("参考图地址无效");
@@ -300,7 +321,7 @@ public class ConfigurableAsyncImageProviderClient implements ImageProviderClient
             addUrls(result, request.getOptions().get("referenceImages"));
             addUrls(result, request.getOptions().get("images"));
         }
-        return ReferenceImageLimiter.limit(result, modelConfig, 1, "可配置异步图片");
+        return ReferenceImageLimiter.limit(result, modelConfig, 4, "可配置异步图片");
     }
 
     private static int resolveImageCount(AiModelConfigVo modelConfig, MediaImageGenerateRequest request) {
@@ -325,6 +346,16 @@ public class ConfigurableAsyncImageProviderClient implements ImageProviderClient
         String resolved = ModelCapabilityResolver.resolveSize(modelConfig,
                 request == null ? null : request.getSize());
         return resolved != null && "1k".equalsIgnoreCase(resolved.trim()) ? "1024x1024" : resolved;
+    }
+
+    static String resolveAspectRatio(MediaImageGenerateRequest request) {
+        if (request == null || request.getOptions() == null) {
+            return null;
+        }
+        Object snakeCase = request.getOptions().get("aspect_ratio");
+        Object camelCase = request.getOptions().get("aspectRatio");
+        return StrUtil.trimToNull(String.valueOf(snakeCase != null ? snakeCase
+                : camelCase != null ? camelCase : ""));
     }
 
     private static List<String> resultUrls(AiModelConfigVo modelConfig, JsonNode root) {

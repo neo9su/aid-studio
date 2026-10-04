@@ -9,12 +9,13 @@
  * - 本页未使用 createFlowShellContext（utils/createFlowInjection.ts），无 Context 降级需求。
  */
 
-import { PlusOutlined } from '@ant-design/icons'
+import { BookOutlined, PlusOutlined, SettingOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { Modal,message } from 'antd'
 import { useRouter } from 'next/navigation'
 import { Suspense,useEffect,useMemo,useRef,useState } from 'react'
 import tvIconRaw from '~/assets/img/icon/tv.svg'
 import SeriesProjectAssetCard from '~/components/create/SeriesProjectAssetCard'
+import { ProjectOutlineModal } from '~/components/steps/scene-character-prop/ProjectOutlineModal'
 import { useRouteLike } from '~/hooks/useRouteLike'
 import { useCreationStore } from '~/stores/creation'
 import type { UserAssetApiType,UserAssetRow,UserEpisodeRow } from '~/types/business-api'
@@ -26,6 +27,7 @@ userAssetRpsList,
 userEpisodeCreate,
 userEpisodeDelete,
 userEpisodeList,
+userProjectDetail,
 userScriptDetailByProject
 } from '~/utils/businessApi'
 import { emptyImageIconUrl as assetCoverPlaceholderRaw } from '~/utils/emptyImageIcon'
@@ -107,6 +109,8 @@ function SeriesEpisodeListClient() {
   const [projectAssets, setProjectAssets] = useState<UserAssetRow[]>([])
   const [projectAssetsLoading, setProjectAssetsLoading] = useState(false)
   const projectAssetsFetchTokenRef = useRef(0)
+  const [outlineModalOpen, setOutlineModalOpen] = useState(false)
+  const [outlineInitAfterSave, setOutlineInitAfterSave] = useState(false)
 
   /** 已加载/加载中的 projectId：effect 因 store 水合后置触发时，同项目不重复拉列表 */
   const episodesLoadedProjectIdRef = useRef<number | null>(null)
@@ -220,7 +224,11 @@ function SeriesEpisodeListClient() {
     const store = useCreationStore.getState()
     store.setCurrentProjectContext({ projectId: pid, episodeId: eid })
     store.setSeriesFlowEnteredStoryScript(true)
-    pushRoute('/create/scene-character', buildQuery(eid))
+    pushRoute('/create/scene-character', {
+      ...buildQuery(eid),
+      stepInitAdvance: '1',
+      stepInitTarget: 'scene-character'
+    })
   }
 
   function onDeleteProjectAsset(row: UserAssetRow) {
@@ -280,7 +288,43 @@ function SeriesEpisodeListClient() {
       if (pid && eid) {
         useCreationStore.getState().setCurrentProjectContext({ projectId: pid, episodeId: eid })
       }
-      void loadProjectAssets()
+      if (pid) void loadProjectAssets()
+    }
+  }
+
+  function openAssetWorkbench() {
+    openSceneCharacterForAssets()
+  }
+
+  async function openOutlineAssetInitialization() {
+    const pid = projectIdFromRoute()
+    const eid = resolveEpisodeIdForAssets()
+    if (!pid) {
+      message.warning('请先选择作品')
+      return
+    }
+    if (!eid) {
+      message.warning('请先新增至少一集，再初始化项目资产')
+      return
+    }
+    try {
+      const project = await userProjectDetail(pid)
+      if (!String(project.projectOutline || '').trim()) {
+        setOutlineInitAfterSave(true)
+        setOutlineModalOpen(true)
+        message.info('请先填写并保存项目总纲')
+        return
+      }
+      useCreationStore.getState().setCurrentProjectContext({ projectId: pid, episodeId: eid })
+      pushRoute('/create/scene-character', {
+        ...buildQuery(eid),
+        outlineInit: '1',
+        stepInitAdvance: '1',
+        stepInitTarget: 'scene-character'
+      })
+    } catch (error: unknown) {
+      const err = error as { msg?: string; message?: string }
+      message.error(err?.msg || err?.message || '读取项目总纲失败')
     }
   }
 
@@ -434,7 +478,37 @@ function SeriesEpisodeListClient() {
             <PlusOutlined />
             新增一集
           </button>
-        ) : null}
+        ) : (
+          <div className="series-ep-list__asset-actions">
+            <button
+              type="button"
+              className="series-ep-list__add"
+              onClick={() => {
+                setOutlineInitAfterSave(false)
+                setOutlineModalOpen(true)
+              }}
+            >
+              <BookOutlined />
+              项目总纲
+            </button>
+            <button
+              type="button"
+              className="series-ep-list__add series-ep-list__add--primary"
+              onClick={() => void openOutlineAssetInitialization()}
+            >
+              <ThunderboltOutlined />
+              总纲初始化资产
+            </button>
+            <button
+              type="button"
+              className="series-ep-list__add"
+              onClick={openAssetWorkbench}
+            >
+              <SettingOutlined />
+              新增/管理{activeTab === 'characters' ? '角色' : activeTab === 'props' ? '道具' : '场景'}
+            </button>
+          </div>
+        )}
       </div>
 
       {activeTab === 'episodes' ? (
@@ -526,10 +600,42 @@ function SeriesEpisodeListClient() {
               </div>
             </div>
           ) : (
-            <div className="series-ep-list__empty">{emptyAssetTips}</div>
+            <div className="series-ep-list__asset-empty">
+              <div className="series-ep-list__asset-empty-title">{emptyAssetTips}</div>
+              <div className="series-ep-list__asset-empty-desc">
+                可从项目总纲自动建立资产，也可以进入素材准备手工新增。
+              </div>
+              <div className="series-ep-list__asset-empty-actions">
+                <button
+                  type="button"
+                  className="series-ep-list__btn series-ep-list__btn--primary"
+                  onClick={() => void openOutlineAssetInitialization()}
+                >
+                  总纲初始化资产
+                </button>
+                <button
+                  type="button"
+                  className="series-ep-list__btn series-ep-list__btn--ghost"
+                  onClick={openAssetWorkbench}
+                >
+                  手工新增
+                </button>
+              </div>
+            </div>
           )}
         </div>
       ) : null}
+      <ProjectOutlineModal
+        open={outlineModalOpen}
+        projectId={projectIdFromRoute()}
+        onOpenChange={setOutlineModalOpen}
+        onSaved={() => {
+          if (outlineInitAfterSave) {
+            setOutlineInitAfterSave(false)
+            void openOutlineAssetInitialization()
+          }
+        }}
+      />
     </div>
   )
 }

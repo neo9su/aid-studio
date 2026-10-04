@@ -17,7 +17,8 @@ resolveRpsSourceType
 } from './sceneModalTaskParsers'
 import {
 buildSceneModalGenerateRequest,
-resolveSceneModalGenerationFormId
+resolveSceneModalGenerationFormId,
+resolveSceneModalReferenceImages
 } from './sceneModalGenerateRequest'
 import type {
 EditSceneImageModalCtx,
@@ -37,21 +38,38 @@ export function useSceneModalGenerate(ctx: EditSceneImageModalCtx): SceneModalGe
       return
     }
 
-    const refUrls = ctx.dialogueSourceImages
+    const explicitRefUrls = ctx.dialogueSourceImages
       .get()
       .map((img) => String(img.url || '').trim())
       .filter(Boolean)
 
     const currentImgRow = ctx.localSceneImages.get()[ctx.currentImageIndex.get()] as Record<string, unknown> | undefined
-    const formId = resolveSceneModalGenerationFormId(currentImgRow, ctx.activeRpsFormIds())
+    const formId = resolveSceneModalGenerationFormId(
+      currentImgRow,
+      ctx.activeRpsFormIds(),
+      ctx.props().imageType === 'form' ? ctx.currentSceneIndex.get() : 0
+    )
     if (formId == null) {
       message.warning('当前缺少形态信息，无法发起生图')
       return
     }
 
-    const modelCode = String(ctx.selectedDialogueModel()?.id || '').trim()
+    const selectedModel = ctx.selectedDialogueModel()
+    const modelCode = String(selectedModel?.id || '').trim()
     if (!modelCode) {
       message.warning('请先选择生图模型')
+      return
+    }
+    const refUrls = resolveSceneModalReferenceImages({
+      referenceImages: explicitRefUrls,
+      currentImageUrl: currentImgRow?.url,
+      capabilityCode: selectedModel?.capabilityCode
+    })
+    // 对话作图同一模型可同时绑定文生图和图生图能力；下拉项的
+    // capabilityCode 只用于补齐图片编辑模型缺失的当前底图；最终能力仍由后端
+    // 根据本次实际携带的参考图选择并做权威校验。
+    if (modelCode === 'comfyui-qwen-image-edit-2511-dwpose' && refUrls.length < 2) {
+      message.warning('Qwen + DWPose 需要 2 张参考图：第 1 张锁定人物与服装，第 2 张提供姿势')
       return
     }
 
@@ -143,7 +161,9 @@ export function useSceneModalGenerate(ctx: EditSceneImageModalCtx): SceneModalGe
     if (canClearTaskUi) ctx.endCanvasTaskOverlay(sceneIdx, imgIdx)
 
     if (result.ok === false) {
-      if (ctx.isSameModalScope(modalScope)) message.error(result.errorMessage || '生图失败')
+      if (ctx.isSameModalScope(modalScope)) {
+        message.error({ content: result.errorMessage || '生图失败', duration: 8 })
+      }
       return
     }
     await ctx.claimFormImagesForModal(submittedTaskId ?? 0, 'form_edit_chat', { items: result.items })

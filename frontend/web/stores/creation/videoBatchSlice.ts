@@ -340,6 +340,7 @@ export function createVideoBatchSlice(set: CreationSet, get: CreationGet): Video
             genre: '',
             style: '',
             description: '',
+            complianceProfile: 'CN_MAINLAND',
             aspectRatio: '16:9',
             scriptType: 'plot',
             modelStrategy: 'economy',

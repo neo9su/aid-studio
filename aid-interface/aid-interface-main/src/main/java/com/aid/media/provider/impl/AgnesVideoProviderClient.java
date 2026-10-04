@@ -61,8 +61,16 @@ public class AgnesVideoProviderClient implements VideoProviderClient {
     /** 闸门等待轮询步长（毫秒） */
     private static final long QUERY_GATE_SLEEP_STEP_MS = 200L;
 
+    /** Agnes 当前 API Key 的提交短窗按约 6 次/分钟限流，批量 POST 至少错开 10 秒。 */
+    private static final long SUBMIT_MIN_GAP_MS = 10_000L;
+
+    /** 上游视频队列满时保持当前分镜重试，避免批量任务快速失败并继续冲击后续分镜。 */
+    private static final long[] SUBMIT_BUSY_RETRY_DELAYS_MS = {30_000L, 30_000L, 30_000L};
+
     /** 上一次状态查询的时间戳（毫秒），进程内全局共享（Agnes 限流按 API Key 维度，本系统单 Key） */
     private static final AtomicLong LAST_QUERY_AT_MS = new AtomicLong(0L);
+
+    private static final AtomicLong LAST_SUBMIT_AT_MS = new AtomicLong(0L);
     @Override
     public String protocol() {
         return AgnesConstants.PROTOCOL_VIDEO;
@@ -105,8 +113,24 @@ public class AgnesVideoProviderClient implements VideoProviderClient {
         log.info("Agnes 视频提交, url={}, model={}, mode={}, seconds={}", submitUrl, model,
                 body.get(AgnesConstants.JSON_MODE), body.get("seconds"));
 
-        String raw = doPost(submitUrl, apiKey, modelConfig.getAuthHeader(), modelConfig.getAuthPrefix(), json);
-        JsonNode root = ProviderResponseHelper.readTree(raw);
+        String raw;
+        JsonNode root;
+        int busyRetry = 0;
+        while (true) {
+            acquireSubmitSlot();
+            raw = doPost(submitUrl, apiKey, modelConfig.getAuthHeader(), modelConfig.getAuthPrefix(), json);
+            root = ProviderResponseHelper.readTree(raw);
+            String submitError = extractSubmitError(root);
+            if (!isRetryableSubmitError(submitError)
+                    || busyRetry >= SUBMIT_BUSY_RETRY_DELAYS_MS.length) {
+                break;
+            }
+            long delayMs = SUBMIT_BUSY_RETRY_DELAYS_MS[busyRetry];
+            busyRetry++;
+            log.warn("Agnes 视频提交繁忙，保留当前分镜延迟重试, model={}, retry={}/{}, delayMs={}",
+                    model, busyRetry, SUBMIT_BUSY_RETRY_DELAYS_MS.length, delayMs);
+            sleepBeforeSubmitRetry(delayMs);
+        }
         if (root == null) {
             log.error("Agnes 视频提交响应解析失败, model={}, responseLen={}", model, StringUtils.length(raw));
             return ProviderSubmitResult.builder().rawResponse(raw).build();
@@ -266,6 +290,57 @@ public class AgnesVideoProviderClient implements VideoProviderClient {
                 Thread.currentThread().interrupt();
                 return;
             }
+        }
+    }
+
+    /** 串行领取提交槽，避免批量失败或快速补偿时连续触发 Agnes 429。 */
+    private void acquireSubmitSlot() {
+        while (true) {
+            long last = LAST_SUBMIT_AT_MS.get();
+            long now = System.currentTimeMillis();
+            long readyAt = last + SUBMIT_MIN_GAP_MS;
+            if (now >= readyAt) {
+                if (LAST_SUBMIT_AT_MS.compareAndSet(last, now)) {
+                    return;
+                }
+                continue;
+            }
+            try {
+                Thread.sleep(Math.min(readyAt - now, QUERY_GATE_SLEEP_STEP_MS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new ServiceException("视频提交已中断");
+            }
+        }
+    }
+
+    static boolean isRetryableSubmitError(String message) {
+        String lower = StringUtils.defaultString(message).trim().toLowerCase();
+        return lower.contains("video queue is full")
+                || lower.contains("too many requests")
+                || lower.contains("service busy");
+    }
+
+    private static String extractSubmitError(JsonNode root) {
+        if (root == null) {
+            return null;
+        }
+        JsonNode error = root.path("error");
+        if (error.isObject()) {
+            return error.path("message").asText(null);
+        }
+        if (error.isTextual()) {
+            return error.asText(null);
+        }
+        return ProviderResponseHelper.readText(root, "message");
+    }
+
+    private static void sleepBeforeSubmitRetry(long delayMs) {
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new ServiceException("视频提交已中断");
         }
     }
 

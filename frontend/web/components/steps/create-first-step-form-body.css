@@ -182,6 +182,35 @@
   font-weight: 500;
 }
 
+.create-first-step-form .compliance-profile-select {
+  width: 100%;
+  height: 36px;
+  padding: 0 34px 0 11px;
+  border: 1px solid rgba(74, 231, 253, 0.2);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--home-text, #e6edf3);
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.create-first-step-form .compliance-profile-select:focus {
+  border-color: var(--home-accent, #4ae7fd);
+}
+
+.create-first-step-form .compliance-profile-description {
+  margin: 5px 1px 0;
+  color: var(--home-muted, #8e97a5);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.create-first-step-form .compliance-profile-description span {
+  color: #c9ae72;
+}
+
 .create-first-step-form .ratio-item {
   border: 1px solid rgba(74, 231, 253, 0.25);
   border-radius: 6px;

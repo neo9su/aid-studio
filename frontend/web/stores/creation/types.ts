@@ -1,5 +1,5 @@
 import type { TaskPartialFailedData } from '~/utils/taskPartialFailed'
-import type { CountProgressSnapshot } from '~/utils/taskSseProgressText'
+import type { CountProgressSnapshot,TaskEtaProgress } from '~/utils/taskSseProgressText'
 
 /**
  * 提取智能体选项（原类型定义在 components/steps/AgentPickerModal.vue，
@@ -131,6 +131,9 @@ export type StoryboardVideoGenTaskSnapshot = {
   /** SSE 最新进度文案（刷新后恢复 loading 展示） */
   message?: string
   stepTitle?: string
+  /** SSE / ETA 展示进度，用于切换分镜或刷新后立即恢复进度条。 */
+  progress?: number
+  eta?: TaskEtaProgress
 }
 
 /** 分镜配音弹窗生成任务（按 storyboardId 隔离，刷新后 compose/status 轮询恢复） */

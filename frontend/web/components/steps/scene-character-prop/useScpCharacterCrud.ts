@@ -48,6 +48,7 @@ export interface ScpCharacterCrudApi {
     id: string
     previewUrl: string
     voiceLibraryId?: number
+    referenceAudioId?: number
   }) => Promise<void>
   toggleVoicePreview: (characterIndex: number, formIndex: number) => Promise<void>
   handleVoicePreviewEnded: () => void
@@ -339,6 +340,7 @@ export function useScpCharacterCrud(ctx: ScpCtx): ScpCharacterCrudApi {
     id: string
     previewUrl: string
     voiceLibraryId?: number
+    referenceAudioId?: number
   }) => {
     const characterIndex = ctx.currentVoiceCharacterIndex.get()
     const formIndex = ctx.currentVoiceFormIndex.get()
@@ -372,7 +374,8 @@ export function useScpCharacterCrud(ctx: ScpCtx): ScpCharacterCrudApi {
     try {
       const binding = await userRoleVoiceBind({
         assetId: Number(assetId),
-        voiceLibraryId: Number(voiceLibraryId)
+        voiceLibraryId: Number(voiceLibraryId),
+        ...(payload.referenceAudioId ? { referenceAudioId: payload.referenceAudioId } : {})
       })
       const voiceFields = roleVoiceBindingToFormFields(binding)
       applyVoiceFieldsToCharacterForms(forms, voiceFields)

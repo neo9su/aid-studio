@@ -50,6 +50,7 @@ import com.aid.common.aid.oss.util.MediaUrlResolver;
 import com.aid.domain.vo.AiModelConfigVo;
 import com.aid.media.dto.MediaImageGenerateRequest;
 import com.aid.media.dto.MediaTaskResponse;
+import com.aid.media.provider.ReferenceImageBase64Support;
 import com.aid.media.service.IMediaGenerationService;
 import com.aid.media.service.MediaBillingQuoteService;
 import com.aid.billing.vo.BillingQuoteVO;
@@ -710,7 +711,7 @@ public class FormEditChatImageServiceImpl implements IFormEditChatImageService
             {
                 log.info("形态图片创作失败，参考图URL为空: formId={}, userId={}",
                         request.getFormId(), userId);
-                throw new RuntimeException("图片无效");
+                throw new RuntimeException("参考图地址为空，请重新选择");
             }
             String trimmed = url.trim();
             // 仅允许本站资源（相对路径或本站域名完整URL），拒绝站外外链
@@ -718,15 +719,19 @@ public class FormEditChatImageServiceImpl implements IFormEditChatImageService
             {
                 log.info("形态图片创作参考图非本站资源: scene=form_edit_chat, genMode={}, formId={}, userId={}, imageUrl={}",
                         genMode, request.getFormId(), userId, trimmed);
-                throw new RuntimeException("图片无效");
+                throw new RuntimeException("参考图来源无效，请重新导入");
             }
-            // 相对路径拼完整URL后再做远程可达性 + Content-Type 校验
-            if (validateRemoteImage
-                    && !ImageUrlValidator.isValidRemoteImageUrl(mediaUrlResolver.toFullUrl(trimmed)))
+            // 本地部署的 /profile 图片映射到 localhost，通用远程校验会按 SSRF 规则拒绝；
+            // 仅当文件能安全映射到 profile 根目录且真实可读时本地放行，其它 URL 仍走强校验。
+            String fullUrl = mediaUrlResolver.toFullUrl(trimmed);
+            boolean readableLocalProfile = ReferenceImageBase64Support.isReadableLocalProfileImage(trimmed)
+                    || ReferenceImageBase64Support.isReadableLocalProfileImage(fullUrl);
+            if (validateRemoteImage && !readableLocalProfile
+                    && !ImageUrlValidator.isValidRemoteImageUrl(fullUrl))
             {
                 log.info("形态图片创作参考图校验失败: scene=form_edit_chat, genMode={}, formId={}, userId={}, imageUrl={}",
                         genMode, request.getFormId(), userId, trimmed);
-                throw new RuntimeException("图片无效");
+                throw new RuntimeException("参考图无法读取，请重新导入");
             }
         }
 

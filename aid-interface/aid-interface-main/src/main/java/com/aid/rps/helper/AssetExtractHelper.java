@@ -24,10 +24,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.aid.agent.IAidAgentService;
 import com.aid.aid.domain.AidAgent;
 import com.aid.aid.domain.AidComicEpisode;
+import com.aid.aid.domain.AidComicProject;
 import com.aid.aid.domain.AidComicScript;
 import com.aid.aid.domain.AidRolePropScene;
 import com.aid.aid.domain.media.AidMediaTask;
 import com.aid.aid.service.IAidComicEpisodeService;
+import com.aid.aid.service.IAidComicProjectService;
 import com.aid.aid.service.IAidComicScriptService;
 import com.aid.aid.service.IAidMediaTaskService;
 import com.aid.aid.service.IAidRolePropSceneService;
@@ -125,6 +127,12 @@ public class AssetExtractHelper
 
     @Autowired
     private IAidComicEpisodeService episodeService;
+
+    @Autowired
+    private IAidComicProjectService projectService;
+
+    @Autowired
+    private ProjectOutlineSectionRouter projectOutlineSectionRouter;
 
     @Autowired
     private IAidRolePropSceneService rpsService;
@@ -239,6 +247,56 @@ public class AssetExtractHelper
             }
         }
         return sb.isEmpty() ? null : sb.toString();
+    }
+
+    /**
+     * 加载独立项目总纲；严格校验项目归属，避免跨用户读取。
+     */
+    public String loadProjectOutline(Long projectId, Long userId)
+    {
+        if (Objects.isNull(projectId) || Objects.isNull(userId))
+        {
+            return null;
+        }
+        LambdaQueryWrapper<AidComicProject> wrapper = Wrappers.lambdaQuery();
+        wrapper.eq(AidComicProject::getId, projectId);
+        wrapper.eq(AidComicProject::getUserId, userId);
+        wrapper.eq(AidComicProject::getDelFlag, DEL_FLAG_NORMAL);
+        wrapper.select(AidComicProject::getProjectOutline);
+        AidComicProject project = projectService.getOne(wrapper, false);
+        return Objects.isNull(project) || StrUtil.isBlank(project.getProjectOutline())
+                ? null : project.getProjectOutline();
+    }
+
+    /** 按资产类型读取总纲有效章节，排除文件清单、镜号进度等制作元数据。 */
+    public String loadProjectOutlineForExtraction(Long projectId, Long userId, String target)
+    {
+        return projectOutlineSectionRouter.route(loadProjectOutline(projectId, userId), target);
+    }
+
+    /** 总纲角色标题是角色初始化的权威清单，正文仅用于补全角色描述。 */
+    public List<ProjectOutlineSectionRouter.CharacterOutlineEntry> loadProjectOutlineCharacterEntries(
+            Long projectId, Long userId)
+    {
+        return projectOutlineSectionRouter.extractCharacterEntries(loadProjectOutline(projectId, userId));
+    }
+
+    public String normalizeOutlineCharacterKey(String name)
+    {
+        return projectOutlineSectionRouter.normalizeCharacterKey(name);
+    }
+
+    /** 判断成人内容与未成年人年龄设定是否同时出现；是否阻断由项目合规模式决定。 */
+    public boolean projectOutlineContainsMinorAdultContent(Long projectId, Long userId)
+    {
+        return projectOutlineSectionRouter.containsMinorAdultContent(loadProjectOutline(projectId, userId));
+    }
+
+    /** 返回带章节和行号的项目总纲风险诊断；未触发时返回 null。 */
+    public String describeProjectOutlineSafetyViolation(Long projectId, Long userId)
+    {
+        return projectOutlineSectionRouter.describeMinorAdultContentViolation(
+                loadProjectOutline(projectId, userId));
     }
 
     /**

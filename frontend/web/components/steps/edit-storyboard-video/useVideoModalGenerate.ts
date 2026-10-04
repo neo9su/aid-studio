@@ -29,7 +29,11 @@ import {
 clearStoryboardVideoModalGenSession,
 persistStoryboardVideoModalGenSession
 } from '~/utils/storyboardVideoModalGenSession'
-import { formatTaskSseLiveText } from '~/utils/taskSseProgressText'
+import {
+formatTaskSseLiveText,
+resolveTaskSseDisplayProgress,
+type TaskSseProgressInput
+} from '~/utils/taskSseProgressText'
 import type { VideoModalCtx,VideoModalGenerateApi,VideoTaskKind } from './types'
 
 /** 出片任务提交 / SSE 跟随 / 刷新恢复（原 setup 生成段逻辑） */
@@ -75,15 +79,23 @@ export function useVideoModalGenerate(ctx: VideoModalCtx): void {
           opts.progressRunning ||
           ctx.defaultVideoProgressTextForTaskKind(opts.taskKind)
       )
+      ctx.videoGenerateProgressPercent.set(
+        persisted ? resolveTaskSseDisplayProgress(persisted) ?? null : null
+      )
     } else {
       ctx.videoGenerateProgressText.set(opts.progressSubmit || '分镜视频提交中…')
+      ctx.videoGenerateProgressPercent.set(null)
     }
     ctx.ensureGeneratingPlaceholderVideo(sceneIdx)
 
-    const onProgress = (p: { stepTitle?: string; message?: string; taskId?: number }) => {
+    const onProgress = (p: TaskSseProgressInput & { percent?: number }) => {
       const live = String(p.message || p.stepTitle || '').trim()
       if (live) {
         ctx.videoGenerateProgressText.set(live)
+      }
+      const displayProgress = resolveTaskSseDisplayProgress(p)
+      if (displayProgress != null) {
+        ctx.videoGenerateProgressPercent.set(displayProgress)
       }
       const tid = Number(
         p.taskId ??
@@ -97,7 +109,9 @@ export function useVideoModalGenerate(ctx: VideoModalCtx): void {
             sceneIdx,
             taskKind: opts.taskKind,
             message: p.message,
-            stepTitle: p.stepTitle
+            stepTitle: p.stepTitle,
+            progress: displayProgress,
+            eta: p.eta
           },
           taskScope.scopeKey
         )
@@ -425,6 +439,9 @@ export function useVideoModalGenerate(ctx: VideoModalCtx): void {
       ctx.videoGenerateTargetKey.set(buildModalTaskOverlayKey(ctx.overlayKeyParts(sceneIdx, taskKind)))
       ctx.videoGenerateProgressText.set(
         formatTaskSseLiveText(persisted || {}, '') || ctx.defaultVideoProgressTextForTaskKind(taskKind)
+      )
+      ctx.videoGenerateProgressPercent.set(
+        persisted ? resolveTaskSseDisplayProgress(persisted) ?? null : null
       )
 
       const settled = await waitForStoryboardVideoModalRestore(storyboardId, gen)

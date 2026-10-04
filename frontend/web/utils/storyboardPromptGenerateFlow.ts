@@ -207,6 +207,23 @@ function safeParseResultData(raw: unknown): unknown {
   }
 }
 
+/** 从 previewOnly 视频提示词任务结果中读取指定分镜的候选提示词。 */
+export async function fetchStoryboardVideoPromptPreview(
+  taskId: number,
+  storyboardId: number
+): Promise<string> {
+  const detail = await fetchUserTaskDetailOnce(taskId)
+  const parsed = safeParseResultData(detail?.resultData)
+  if (!parsed || typeof parsed !== 'object') return ''
+  const items = (parsed as { successItems?: unknown }).successItems
+  if (!Array.isArray(items)) return ''
+  const hit = items.find((item) => {
+    if (!item || typeof item !== 'object') return false
+    return Number((item as { storyboardId?: unknown }).storyboardId) === Number(storyboardId)
+  }) as { prompt?: unknown } | undefined
+  return String(hit?.prompt ?? '').trim()
+}
+
 function outcomeFromPromptTaskDetail(
   taskId: number,
   detail: Awaited<ReturnType<typeof fetchUserTaskDetailOnce>>

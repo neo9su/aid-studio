@@ -4,6 +4,8 @@ import java.util.List;
 
 import com.aid.rps.dto.AssetExtractTaskVO;
 import com.aid.rps.dto.StoryboardScriptBatchRequest;
+import com.aid.rps.dto.StoryboardScriptReviewRequest;
+import com.aid.rps.dto.StoryboardScriptReviewVO;
 import com.aid.billing.vo.BillingQuoteVO;
 
 /**
@@ -54,4 +56,10 @@ public interface IStoryboardScriptService
 
     /** 分镜脚本失败批次续生报价。 */
     BillingQuoteVO quoteResumeStoryboardScript(Long taskId, Long userId);
+
+    /** 查询原分镜与本次 AI 候选分镜，供用户逐条审核。 */
+    StoryboardScriptReviewVO getStoryboardScriptReview(Long taskId, Long userId);
+
+    /** 应用用户审核结果；未被选中的版本继续归档保留。 */
+    void applyStoryboardScriptReview(StoryboardScriptReviewRequest request, Long userId);
 }

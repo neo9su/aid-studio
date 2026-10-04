@@ -98,7 +98,10 @@ public class ComposeResultListener {
                 return;
             }
             String category = task.getCallbackCategory();
-            if (ComposeConstants.CALLBACK_EPISODE_EDITOR.equalsIgnoreCase(category)) {
+            if (ComposeConstants.CALLBACK_STORYBOARD_LONG_VIDEO.equalsIgnoreCase(category)) {
+                // 分镜长视频父任务需要以隐藏片段 + 最终成片统一计数，由专用监听器回写。
+                return;
+            } else if (ComposeConstants.CALLBACK_EPISODE_EDITOR.equalsIgnoreCase(category)) {
                 writeEpisodeEditor(task);
             } else {
                 // 默认接口1：落 aid_gen_record（genType=compose）

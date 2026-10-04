@@ -41,6 +41,9 @@ public class GenRecordVO {
     /** 用户补充文本 */
     private String userInputText;
 
+    /** 本次生成实际提交给模型的提示词，用于用户对照历史版本。 */
+    private String promptText;
+
     /** 图生视频依赖的底图ID */
     private Long baseImageId;
 

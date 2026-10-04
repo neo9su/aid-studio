@@ -2,6 +2,7 @@ import type { RefObject } from 'react'
 import type { CreationStoreState } from '~/stores/creation'
 import type { SceneCharacterData } from '~/types'
 import type { UserTaskRow } from '~/types/business-api'
+import type { AssetExtractScope } from '~/types/business-api'
 import type { RouteLikeLocation } from '~/types/routeLike'
 import type { CreateFlowShellContext } from '~/utils/createFlowInjection'
 import type { Mirrored } from './mirrored'
@@ -66,7 +67,10 @@ export interface SceneCharacterPropProps {
   /** 原 emit('stop-extract') */
   onStopExtract: () => void
   /** 原 emit('open-extract-modal')：打开智能体弹窗，仅展示对应一列，开始提取后只跑该类型 */
-  onOpenExtractModal: (scope: 'scene' | 'character' | 'prop') => void
+  onOpenExtractModal: (
+    scope: 'all' | 'scene' | 'character' | 'prop',
+    extractScope?: AssetExtractScope
+  ) => void
 }
 
 /** withDefaults 之后的 props（isExtracting / extractingStage 默认值已填充） */
@@ -132,7 +136,10 @@ export interface ScpBaseCtx {
   patchStore: (partial: Partial<CreationStoreState>) => void
   emitUpdateModelValue: (value: SceneCharacterData) => void
   emitStopExtract: () => void
-  emitOpenExtractModal: (scope: 'scene' | 'character' | 'prop') => void
+  emitOpenExtractModal: (
+    scope: 'all' | 'scene' | 'character' | 'prop',
+    extractScope?: AssetExtractScope
+  ) => void
 
   // —— 顶层可变状态（原 ref；Mirrored=需触发渲染）——
   activeTab: Mirrored<TabKey>

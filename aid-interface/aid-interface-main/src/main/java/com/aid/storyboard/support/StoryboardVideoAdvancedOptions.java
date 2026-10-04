@@ -14,17 +14,24 @@ public final class StoryboardVideoAdvancedOptions {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String TASK = "omni_reference_task_type";
     private static final String FORMAT = "output_format";
+    private static final String FACE_SWAP = "face_swap";
     private StoryboardVideoAdvancedOptions() { }
 
     public static void normalize(StoryboardVideoGenerateRequest request, boolean single) {
         String task = trim(request.getOmniReferenceTaskType());
         String format = trim(request.getOutputFormat());
-        if (!single && (task != null || format != null || Integer.valueOf(-1).equals(request.getDurationSeconds())))
+        boolean faceSwap = Boolean.TRUE.equals(request.getFaceSwap());
+        if (!single && (task != null || format != null || faceSwap
+                || Integer.valueOf(-1).equals(request.getDurationSeconds())))
             throw new ServiceException("高级视频参数仅限单镜");
         if (task != null && !Set.of("reference", "edit", "extend", "auto").contains(task))
             throw new ServiceException("视频任务类型不支持");
         request.setOmniReferenceTaskType(task);
         request.setOutputFormat(format);
+        request.setFaceSwap(faceSwap ? Boolean.TRUE : null);
+        if (faceSwap && (request.getReferenceVideoRecordIds() == null
+                || request.getReferenceVideoRecordIds().size() != 1))
+            throw new ServiceException("精准换脸需要一个目标视频");
         if ("edit".equals(task) || "extend".equals(task)) {
             if (request.getReferenceVideoRecordIds() == null || request.getReferenceVideoRecordIds().isEmpty())
                 throw new ServiceException("请选择参考视频");
@@ -38,17 +45,24 @@ public final class StoryboardVideoAdvancedOptions {
         Map<String, Object> result = new LinkedHashMap<>(planned == null ? Map.of() : planned);
         String task = trim(request.getOmniReferenceTaskType());
         String format = trim(request.getOutputFormat());
-        if (task == null && format == null) return result;
-        if (config == null || !"tokendance:seedance:generations".equals(config.getProtocol()))
-            throw new ServiceException("高级视频参数尚未适配");
+        boolean faceSwap = Boolean.TRUE.equals(request.getFaceSwap());
+        if (task == null && format == null && !faceSwap) return result;
+        if (config == null) throw new ServiceException("模型能力配置错误");
         JsonNode capability;
         try { capability = JSON.readTree(config.getCapabilityJson()); }
         catch (Exception ex) { throw new ServiceException("模型能力配置错误"); }
         if (capability == null) throw new ServiceException("模型能力配置错误");
-        requireOption(capability, "seedanceTaskTypeOptions", task);
-        requireOption(capability, "outputFormatOptions", format);
+        if (task != null || format != null) {
+            if (!"tokendance:seedance:generations".equals(config.getProtocol()))
+                throw new ServiceException("高级视频参数尚未适配");
+            requireOption(capability, "seedanceTaskTypeOptions", task);
+            requireOption(capability, "outputFormatOptions", format);
+        }
+        if (faceSwap && !capability.path("supportsFaceSwap").asBoolean(false))
+            throw new ServiceException("当前模型不支持精准换脸");
         if (task != null) result.put(TASK, task);
         if (format != null) result.put(FORMAT, format);
+        if (faceSwap) result.put(FACE_SWAP, true);
         return result;
     }
 
@@ -57,6 +71,7 @@ public final class StoryboardVideoAdvancedOptions {
         if (options != null) for (String key : new String[]{TASK, FORMAT}) {
             if (options.get(key) instanceof String value && !value.isBlank()) result.put(key, value);
         }
+        if (options != null && Boolean.TRUE.equals(options.get(FACE_SWAP))) result.put(FACE_SWAP, true);
         return result;
     }
 
@@ -66,9 +81,13 @@ public final class StoryboardVideoAdvancedOptions {
         if (!node.isObject()) throw new ServiceException("视频任务快照无效");
         Map<String, Object> result = new LinkedHashMap<>();
         node.fields().forEachRemaining(entry -> {
-            if (!Set.of(TASK, FORMAT).contains(entry.getKey()) || !entry.getValue().isTextual())
+            if (Set.of(TASK, FORMAT).contains(entry.getKey()) && entry.getValue().isTextual()) {
+                result.put(entry.getKey(), entry.getValue().textValue());
+            } else if (FACE_SWAP.equals(entry.getKey()) && entry.getValue().isBoolean()) {
+                result.put(FACE_SWAP, entry.getValue().booleanValue());
+            } else {
                 throw new ServiceException("视频任务快照无效");
-            result.put(entry.getKey(), entry.getValue().textValue());
+            }
         });
         return result;
     }
@@ -77,6 +96,7 @@ public final class StoryboardVideoAdvancedOptions {
         if (options == null) return;
         request.setOmniReferenceTaskType((String) options.get(TASK));
         request.setOutputFormat((String) options.get(FORMAT));
+        request.setFaceSwap(Boolean.TRUE.equals(options.get(FACE_SWAP)) ? Boolean.TRUE : null);
     }
 
     private static void requireOption(JsonNode capability, String key, String value) {

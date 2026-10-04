@@ -287,11 +287,34 @@ export async function userAssetRpsAiExtract(body: UserAssetRpsAiExtractRequest):
 export async function userRoleVoiceBind(body: {
   assetId: number
   voiceLibraryId: number
+  referenceAudioId?: number
   overrideSpeed?: number
   overridePitch?: number
   overrideEmotion?: string
 }): Promise<RoleVoiceBindingVO> {
   const res = await request.post<ApiEnvelope<RoleVoiceBindingVO>>('/api/user/asset/rps/voice/bind', body)
+  return unwrap(res)
+}
+
+/** 参考音频注册为 Qwen 私有克隆音色并绑定角色。 */
+export async function userRoleVoiceClone(
+  body: import('~/types/business-api').RoleVoiceCloneRequest
+): Promise<RoleVoiceBindingVO> {
+  const res = await request.post<ApiEnvelope<RoleVoiceBindingVO>>(
+    '/api/user/asset/rps/voice/clone',
+    body
+  )
+  return unwrap(res)
+}
+
+export async function userRoleVoiceCloneStatus(): Promise<{
+  enabled: boolean
+  model: string
+  message: string
+}> {
+  const res = await request.get<ApiEnvelope<{ enabled: boolean; model: string; message: string }>>(
+    '/api/user/asset/rps/voice/clone/status'
+  )
   return unwrap(res)
 }
 

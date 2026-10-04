@@ -18,7 +18,7 @@ public class ScriptSplitPreviewRequest {
 
     /**
      * 整篇剧本文本（必填，上限 10 万字）。
-     * 来源：用户在导入框粘贴的整篇剧本，或前端读取 .txt 文件后的文本内容。
+     * 来源：用户在导入框粘贴的整篇剧本，或前端读取 .txt / .md 文件后的文本内容。
      */
     @NotBlank(message = "剧本内容不能为空")
     private String scriptText;

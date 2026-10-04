@@ -18,6 +18,8 @@ StoryboardGenerateScriptData,
 StoryboardGenerateScriptRequest,
 StoryboardGenerateScriptResumeData,
 StoryboardGenerateScriptResumeRequest,
+StoryboardScriptReviewApplyRequest,
+StoryboardScriptReviewData,
 StoryboardGenerateVideoPromptData,
 StoryboardGenerateVideoPromptGridData,
 StoryboardGenerateVideoPromptGridRequest,
@@ -82,6 +84,27 @@ export async function userStoryboardGenerateScript(
     body
   )
   return unwrap(res)
+}
+
+/** 查询自动分镜覆盖前的原稿与本次 AI 候选稿。 */
+export async function userStoryboardGetScriptReview(
+  taskId: number
+): Promise<StoryboardScriptReviewData> {
+  const res = await request.post<ApiEnvelope<StoryboardScriptReviewData>>(
+    '/api/user/storyboard/generate/script/review',
+    { taskId }
+  )
+  return unwrap(res)
+}
+
+/** 应用逐条或批量审核决定，未采用版本在服务端继续归档保留。 */
+export async function userStoryboardApplyScriptReview(
+  body: StoryboardScriptReviewApplyRequest
+): Promise<void> {
+  await request.post<ApiEnvelope<unknown>>(
+    '/api/user/storyboard/generate/script/review/apply',
+    body
+  )
 }
 
 /** @deprecated 请使用 userTaskResume */

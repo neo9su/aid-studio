@@ -32,6 +32,8 @@ function createContext() {
     videoCount: state(1),
     cameraMovementDesc: state(''),
     multiParamShootingTechnique: state(null),
+    submittedVideoPromptByStoryboardId: state({}),
+    faceSwapEnabled: state(false),
     imageToVideoPromptPlain: () => '人物向前走',
     multiParamPromptPlain: () => '人物向前走',
     showImageToVideoGenerateLoadingGet: () => false,

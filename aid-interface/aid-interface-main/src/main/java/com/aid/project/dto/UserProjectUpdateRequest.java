@@ -25,6 +25,14 @@ public class UserProjectUpdateRequest {
     @Size(max = 500, message = "项目描述不能超过500个字符")
     private String projectDesc;
 
+    /** 项目总纲/资产圣经（不计入分集，上限10万字） */
+    @Size(max = 100000, message = "项目总纲不能超过10万字")
+    private String projectOutline;
+
+    /** 内容与发布合规模式：PRIVATE_ADULT / CN_MAINLAND / US_PLATFORMS */
+    @Size(max = 32, message = "内容与发布模式参数过长")
+    private String complianceProfile;
+
     /** 封面图（入参自动剥离域名入库） */
     @MediaUrl
     private String coverUrl;

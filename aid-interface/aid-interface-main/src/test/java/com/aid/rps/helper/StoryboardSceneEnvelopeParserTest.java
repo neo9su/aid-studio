@@ -3,6 +3,7 @@ package com.aid.rps.helper;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
@@ -14,6 +15,20 @@ import com.aid.common.exception.ServiceException;
 class StoryboardSceneEnvelopeParserTest
 {
     private final StoryboardSceneEnvelopeParser parser = new StoryboardSceneEnvelopeParser();
+
+    @Test
+    void overridesLegacyProfessionalPromptWithDirectScenesContract()
+    {
+        String legacy = "最终响应只能是 {\"content\":[...]}";
+
+        String prompt = parser.enforceDirectOutputContract(legacy, true);
+
+        assertTrue(prompt.startsWith(legacy));
+        assertTrue(prompt.contains("替代上文所有旧输出格式"));
+        assertTrue(prompt.contains("{\"scenes\":["));
+        assertTrue(prompt.contains("每个 shots 元素只能包含 content 一个字段"));
+        assertEquals(legacy, parser.enforceDirectOutputContract(legacy, false));
+    }
 
     @Test
     void keepsMultipleShotsInsideOneBoundSceneEnvelope()

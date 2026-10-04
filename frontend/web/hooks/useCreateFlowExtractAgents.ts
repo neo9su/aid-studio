@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { message } from 'antd'
 import type { ExtractAgents, ExtractModalScope } from '~/components/steps/ExtractAgentModal'
 import type { ExtractModelCodes } from '~/utils/extractAgentBiz'
-import type { AssetExtractType } from '~/types/business-api'
+import type { AssetExtractScope, AssetExtractType } from '~/types/business-api'
 import type { RouteLikeLocation } from '~/types/routeLike'
 import { useCreationStore } from '~/stores/creation'
 import { useRouteLike } from '~/composables/useRouteLike'
@@ -46,6 +46,9 @@ export function useCreateFlowExtractAgents() {
   routeRef.current = route
 
   const [extractModalScope, setExtractModalScopeState] = useState<ExtractModalScope>('all')
+  const [extractInitialScope, setExtractInitialScope] = useState<AssetExtractScope>(
+    'EPISODE_INCREMENTAL'
+  )
   const extractModalScopeRef = useRef<ExtractModalScope>('all')
   const setExtractModalScope = useCallback((v: ExtractModalScope) => {
     extractModalScopeRef.current = v
@@ -195,6 +198,7 @@ export function useCreateFlowExtractAgents() {
         if (!shouldAllowAutoExtractModalOpen(ctxKeyAtStart)) return
 
         setExtractModalScope('all')
+        setExtractInitialScope('EPISODE_INCREMENTAL')
         store().setExtractModalActionMode('start')
         useCreationStore.setState({ showExtractAgentModal: true })
       })()
@@ -279,13 +283,25 @@ export function useCreateFlowExtractAgents() {
   }, [panel])
 
   const handleOpenExtractModalFromScp = useCallback(
-    (scope: Exclude<ExtractModalScope, 'all'>) => {
-      if (!hasStoryScript()) {
+    (scope: ExtractModalScope, requestedScope: AssetExtractScope = 'EPISODE_INCREMENTAL') => {
+      if (!hasStoryScript() && scope !== 'character' && requestedScope !== 'PROJECT_OUTLINE') {
         message.warning('请先添加剧本故事')
         return
       }
       setExtractModalScope(scope)
-      store().setExtractModalActionMode('start')
+      setExtractInitialScope(requestedScope)
+      const sc = store().formData.sceneCharacter
+      const hasExisting =
+        scope === 'all'
+          ? [...sc.scenes, ...sc.characters, ...sc.props].some((name) =>
+              Boolean(String(name || '').trim())
+            )
+          : scope === 'scene'
+          ? sc.scenes.some((name) => String(name || '').trim())
+          : scope === 'character'
+            ? sc.characters.some((name) => String(name || '').trim())
+            : sc.props.some((name) => String(name || '').trim())
+      store().setExtractModalActionMode(hasExisting ? 'continueOrReextract' : 'start')
       useCreationStore.setState({ showExtractAgentModal: true })
     },
     [hasStoryScript, setExtractModalScope]
@@ -306,6 +322,7 @@ export function useCreateFlowExtractAgents() {
       manualModelPickByKind?: Partial<Record<AssetExtractType, boolean>>
       scope: ExtractModalScope
       overwrite?: boolean
+      extractScope: AssetExtractScope
     }) => {
       runStartExtractAssets(runtime, payload)
     },
@@ -320,6 +337,7 @@ export function useCreateFlowExtractAgents() {
 
   return {
     extractModalScope,
+    extractInitialScope,
     setExtractModalScope,
     updateExtractAgents,
     updateExtractModelCodes,

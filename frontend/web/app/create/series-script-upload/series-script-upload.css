@@ -82,6 +82,20 @@
   text-underline-offset: 3px;
 }
 
+.series-script-upload__outline {
+  border: 1px solid rgba(74, 231, 253, 0.48);
+  border-radius: 8px;
+  padding: 10px 18px;
+  color: #9befff;
+  background: rgba(12, 39, 52, 0.72);
+  cursor: pointer;
+}
+
+.series-script-upload__outline:hover {
+  border-color: #4ae7fd;
+  color: #e0fbff;
+}
+
 .series-script-upload__done,
 .series-script-upload__preview {
   flex: 1;

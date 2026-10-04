@@ -6,6 +6,7 @@ import com.aid.asset.dto.UserComicAssetDeleteRequest;
 import com.aid.asset.dto.UserComicAssetDetailRequest;
 import com.aid.asset.dto.UserComicAssetListRequest;
 import com.aid.asset.dto.UserComicAssetUpdateRequest;
+import com.aid.asset.dto.UserComicAssetGenerateImageRequest;
 import com.aid.asset.service.IUserComicAssetService;
 import com.aid.common.annotation.Anonymous;
 import com.aid.common.core.controller.BaseController;
@@ -112,5 +113,24 @@ public class UserComicAssetController extends BaseController {
     @PostMapping("/type/list")
     public AjaxResult typeList() {
         return AjaxResult.success("查询成功", userComicAssetService.listAllowedTypes());
+    }
+
+    /**
+     * 使用现有提示词为缺失图片的参考资产生成个人副本图片。
+     */
+    @PostMapping("/generate-image")
+    public AjaxResult generateImage(@Valid @RequestBody UserComicAssetGenerateImageRequest request) {
+        Long userId = SecurityUtils.getUserId();
+        return AjaxResult.success("提交成功", userComicAssetService.generateAssetImage(request, userId));
+    }
+
+    /**
+     * 查询资产补图媒体任务；服务端校验任务归属。
+     */
+    @PostMapping("/generate-image/status")
+    public AjaxResult generateImageStatus(@RequestBody Map<String, Long> request) {
+        Long taskId = request == null ? null : request.get("taskId");
+        Long userId = SecurityUtils.getUserId();
+        return AjaxResult.success("查询成功", userComicAssetService.queryAssetImageTask(taskId, userId));
     }
 }

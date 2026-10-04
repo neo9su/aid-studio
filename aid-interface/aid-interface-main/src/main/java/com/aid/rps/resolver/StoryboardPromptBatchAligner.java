@@ -20,6 +20,16 @@ public final class StoryboardPromptBatchAligner
 
     private static final String SHOT_KEY_PREFIX = "SB-";
 
+    private static final String BUSINESS_NO_GROUP = "镜头组";
+
+    private static final String BUSINESS_NO_SHOT = "镜号";
+
+    private static final String BUSINESS_NO_GROUP_ALIAS = "shotGroupName";
+
+    private static final String BUSINESS_NO_SHOT_ALIAS = "shotNumber";
+
+    private static final String BUSINESS_NO_GENERIC_ALIAS = "业务编号";
+
     private StoryboardPromptBatchAligner()
     {
     }
@@ -102,13 +112,20 @@ public final class StoryboardPromptBatchAligner
             {
                 return AlignmentResult.failure("duplicate_shot_key: key=" + key);
             }
-            if (!element.has(businessNoField))
+            JsonNode businessNumberNode = resolveBusinessNumberNode(element, businessNoField);
+            if (Objects.isNull(businessNumberNode))
             {
                 return AlignmentResult.failure("missing_business_number: key=" + key);
             }
             String expectedBusinessNumber = expectedBusinessNumbers.get(targetIndex);
-            String returnedBusinessNumber = normalizeBusinessNumber(element.path(businessNoField).asText(""));
-            if (!Objects.equals(expectedBusinessNumber, returnedBusinessNumber))
+            String returnedBusinessNumber = normalizeBusinessNumber(businessNumberNode.asText(""));
+            boolean businessNumberMatches = Objects.equals(expectedBusinessNumber, returnedBusinessNumber);
+            if (!businessNumberMatches && element.has(BUSINESS_NO_GENERIC_ALIAS))
+            {
+                businessNumberMatches = Objects.equals(key,
+                        normalizeShotKey(element.path(BUSINESS_NO_GENERIC_ALIAS).asText("")));
+            }
+            if (!businessNumberMatches)
             {
                 return AlignmentResult.failure("business_number_mismatch: key=" + key);
             }
@@ -120,6 +137,30 @@ public final class StoryboardPromptBatchAligner
             return AlignmentResult.failure("incomplete_alignment");
         }
         return AlignmentResult.success(aligned);
+    }
+
+    /**
+     * 兼容视觉导演历史英文业务字段，同时仍要求字段值与目标分镜完全匹配。
+     */
+    private static JsonNode resolveBusinessNumberNode(JsonNode element, String businessNoField)
+    {
+        if (element.has(businessNoField))
+        {
+            return element.get(businessNoField);
+        }
+        if (BUSINESS_NO_GROUP.equals(businessNoField) && element.has(BUSINESS_NO_GROUP_ALIAS))
+        {
+            return element.get(BUSINESS_NO_GROUP_ALIAS);
+        }
+        if (BUSINESS_NO_SHOT.equals(businessNoField) && element.has(BUSINESS_NO_SHOT_ALIAS))
+        {
+            return element.get(BUSINESS_NO_SHOT_ALIAS);
+        }
+        if (element.has(BUSINESS_NO_GENERIC_ALIAS))
+        {
+            return element.get(BUSINESS_NO_GENERIC_ALIAS);
+        }
+        return null;
     }
 
     private static String normalizeShotKey(String raw)

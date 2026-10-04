@@ -1,9 +1,9 @@
 /** 剧本上传：与 POST /api/user/script/upload 对齐的前端校验 */
 
-export const SCRIPT_UPLOAD_ACCEPT = '.txt,text/plain'
+export const SCRIPT_UPLOAD_ACCEPT = '.txt,.md,text/plain,text/markdown'
 
-export function isScriptTxtFileName(fileName: string): boolean {
-  return (fileName || '').trim().toLowerCase().endsWith('.txt')
+export function isScriptTextFileName(fileName: string): boolean {
+  return /\.(?:txt|md)$/.test((fileName || '').trim().toLowerCase())
 }
 
 const BINARY_MAGIC: Array<{ name: string; bytes: number[]; offset?: number }> = [
@@ -57,8 +57,8 @@ export async function assertScriptPlainTextFile(file: File): Promise<void> {
 }
 
 export function validateScriptUploadFile(file: File): string | null {
-  if (!isScriptTxtFileName(file.name)) {
-    return '格式不支持，请上传 .txt 纯文本文件'
+  if (!isScriptTextFileName(file.name)) {
+    return '格式不支持，请上传 .txt 或 .md 文本文件'
   }
   return null
 }

@@ -1,3 +1,38 @@
 @import './storyboard-video-create-step-storyboard-video.css';
 @import './storyboard-video-scene-card-failed-icon.css';
 @import './storyboard-video-storyboard-insert-hint.css';
+
+/* 分镜视频批量生成：进度详情 / 停滞告警条（toolbar 下方独立一行） */
+.storyboard-step .storyboard-progress-alert-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0 0.125rem 0.5rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.storyboard-step .storyboard-progress-alert-counts {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.storyboard-step .storyboard-progress-stalled {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  color: #f5a623;
+  font-weight: 600;
+}
+
+.storyboard-step .storyboard-progress-refresh-btn {
+  height: 24px;
+  font-size: 12px;
+  border-radius: 6px;
+}

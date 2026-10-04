@@ -55,6 +55,7 @@ import com.aid.step.service.ICreationStepService;
 import com.aid.storyboard.dto.*;
 import com.aid.storyboard.service.IStoryboardWorkbenchService;
 import com.aid.storyboard.support.StoryboardDurationResolver;
+import com.aid.storyboard.support.StoryboardReadableScriptParser;
 import com.aid.voice.util.DialogueSubtitleFormatter;
 import com.aid.voice.util.DialogueTextSanitizer;
 import com.aid.voice.util.VoiceEmotionCapability;
@@ -115,19 +116,6 @@ public class StoryboardWorkbenchServiceImpl implements IStoryboardWorkbenchServi
     private static final String FUNC_CODE_STORYBOARD_VIDEO_MULTI_PRO = "main_storyboard_video_multi_pro";
     /** 宫格视频模型池 */
     private static final String FUNC_CODE_STORYBOARD_VIDEO_GRID = "main_storyboard_video_grid";
-
-    /**
-     * 分镜脚本 {@code script_params} 中文 key 全集，用于编辑回写时把可读文本反解析为结构化字段、识别字段边界。
-     */
-    private static final Set<String> SHOT_PARAM_KEYS = new LinkedHashSet<>(Arrays.asList(
-            // —— 公共 / 漫剧单镜结构 key ——
-            "镜号", "场次序号", "批内位置", "剧本内容", "画面描述", "台词", "动作状态", "叙事功能",
-            "时间坐标", "年代坐标", "日期坐标", "气候天象", "引用信息", "景别", "拍摄角度", "镜头焦距",
-            "镜头运动", "构图", "画面氛围", "音效", "色彩倾向", "光线", "曝光虚化",
-            // —— 中文镜头组结构 key（专业版 multiref / auto_grid 宫格，缺失会导致编辑回写吞字段）——
-            // 注意：凡是会渲染进 story_script 的 key 都必须在此登记；缺失的 key 行会被当成上一字段的
-            // 多行续接值拼进其值里，触发"脚本已变更"误判 → 误清空 image_prompt/video_prompt 等派生提示词
-            "镜头组", "镜头组编号", "镜头组序号", "画面说明", "时空环境", "镜头模式", "运镜等级", "时长估算", "镜头脚本"));
 
     /**
      * 渲染 {@code story_script} 可读文本时跳过的元数据 key
@@ -1347,49 +1335,7 @@ public class StoryboardWorkbenchServiceImpl implements IStoryboardWorkbenchServi
      * 否则视为上一字段的多行值续接。识别不到任何已知 key 时返回空 Map。
      */
     private LinkedHashMap<String, String> parseReadableToFields(String text) {
-        LinkedHashMap<String, String> out = new LinkedHashMap<>();
-        if (StrUtil.isBlank(text)) {
-            return out;
-        }
-        String currentKey = null;
-        StringBuilder currentVal = new StringBuilder();
-        for (String rawLine : text.split("\n", -1)) {
-            String line = rawLine.replace("\r", "");
-            String[] kv = matchLeadingKey(line);
-            if (kv != null) {
-                if (currentKey != null) {
-                    out.put(currentKey, currentVal.toString().trim());
-                }
-                currentKey = kv[0];
-                currentVal = new StringBuilder(kv[1]);
-            } else if (currentKey != null) {
-                // 多行值续接
-                currentVal.append('\n').append(line);
-            }
-            // 否则：起始的非字段行直接忽略
-        }
-        if (currentKey != null) {
-            out.put(currentKey, currentVal.toString().trim());
-        }
-        return out;
-    }
-
-    /**
-     * 判断行是否以"已知中文 key + 冒号"开头。命中返回 [key, 冒号后的值]，否则返回 null。
-     */
-    private String[] matchLeadingKey(String line) {
-        if (StrUtil.isBlank(line)) {
-            return null;
-        }
-        for (String key : SHOT_PARAM_KEYS) {
-            if (line.startsWith(key + "：")) {
-                return new String[]{key, line.substring(key.length() + 1)};
-            }
-            if (line.startsWith(key + ":")) {
-                return new String[]{key, line.substring(key.length() + 1)};
-            }
-        }
-        return null;
+        return StoryboardReadableScriptParser.parseFields(text);
     }
 
     /**
@@ -3054,7 +3000,7 @@ public class StoryboardWorkbenchServiceImpl implements IStoryboardWorkbenchServi
         LambdaQueryWrapper<AidGenRecord> wrapper = Wrappers.lambdaQuery();
         wrapper.select(AidGenRecord::getId, AidGenRecord::getStoryboardId, AidGenRecord::getUserId,
                 AidGenRecord::getGenType, AidGenRecord::getFileUrl, AidGenRecord::getModelId,
-                AidGenRecord::getUserInputText, AidGenRecord::getBaseImageId,
+                AidGenRecord::getUserInputText, AidGenRecord::getPromptText, AidGenRecord::getBaseImageId,
                 AidGenRecord::getFirstImageId, AidGenRecord::getLastImageId,
                 AidGenRecord::getVideoDuration, AidGenRecord::getSoundDesc,
                 AidGenRecord::getCostCredits, AidGenRecord::getIsSelected,
@@ -3136,6 +3082,7 @@ public class StoryboardWorkbenchServiceImpl implements IStoryboardWorkbenchServi
                 .displayName(displayName)
                 .genType(record.getGenType()).fileUrl(record.getFileUrl())
                 .modelId(record.getModelId()).userInputText(record.getUserInputText())
+                .promptText(record.getPromptText())
                 .baseImageId(record.getBaseImageId()).firstImageId(record.getFirstImageId())
                 .lastImageId(record.getLastImageId()).videoDuration(record.getVideoDuration())
                 .soundDesc(record.getSoundDesc()).costCredits(record.getCostCredits())

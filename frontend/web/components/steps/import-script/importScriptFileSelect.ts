@@ -147,7 +147,8 @@ export function openImportScriptFilePicker(opts: ImportScriptFilePickerOptions) 
       const isScriptFile =
         opts.acceptAssetType === 'script' ||
         opts.acceptAssetType === 'all' ||
-        nameLower.endsWith('.txt')
+        nameLower.endsWith('.txt') ||
+        nameLower.endsWith('.md')
       if (isScriptFile) {
         const formatError = validateScriptUploadFile(file)
         if (formatError) {

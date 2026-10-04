@@ -18,6 +18,10 @@ import { isRpsSettingPromptEditable } from './scpSettingPromptUtils'
 
 /** 第三步全部弹窗接线（与原模板 1382-1590 行一一对应；重型编辑弹窗 lazy 挂载） */
 export function ScpModalsView({ ctx }: { ctx: ScpCtx }) {
+  const voiceCharacterIndex = ctx.currentVoiceCharacterIndex.value
+  const voiceAssetId = ctx.characterAssetIds.value[voiceCharacterIndex]
+  const voiceProjectId = Number(ctx.store().currentProjectId)
+  const voiceEpisodeId = Number(ctx.store().currentEpisodeId)
   const sceneSetting = ctx.sceneSettings.value[ctx.currentSceneName()]
   const characterSettingForm =
     ctx.characterForms.value[ctx.currentCharacterIndex.value]?.[
@@ -322,6 +326,19 @@ export function ScpModalsView({ ctx }: { ctx: ScpCtx }) {
         open={ctx.showVoiceTimbrePickerModal.value}
         onOpenChange={(v) => ctx.showVoiceTimbrePickerModal.set(v)}
         initialVoiceName={ctx.voicePickerInitialName.value}
+        cloneContext={
+          Number.isFinite(Number(voiceAssetId)) && Number(voiceAssetId) > 0 &&
+          Number.isFinite(voiceProjectId) && voiceProjectId > 0
+            ? {
+                assetId: Number(voiceAssetId),
+                projectId: voiceProjectId,
+                ...(Number.isFinite(voiceEpisodeId) && voiceEpisodeId > 0
+                  ? { episodeId: voiceEpisodeId }
+                  : {}),
+                defaultName: `${ctx.localValue.value.characters[voiceCharacterIndex] || '角色'}克隆音色`
+              }
+            : undefined
+        }
         onConfirm={(payload) => void ctx.handleVoiceTimbreConfirm(payload)}
       />
       <audio

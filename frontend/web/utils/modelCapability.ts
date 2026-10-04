@@ -9,6 +9,8 @@ export interface ModelCapabilitySnapshot {
   defaultSize: string
   defaultOutputCount: number
   durationOptions: number[]
+  /** Provider's native single-request ceiling before AID automatic splitting. */
+  nativeMaxDurationSeconds?: number
   defaultDurationSeconds: number
   supportsDuration: boolean
   /** 是否支持音画同出；仅 capability.supportsAudio === true 时为 true */
@@ -36,6 +38,19 @@ const DEFAULT_VIDEO_SIZE_OPTIONS = ['720p', '1080p']
 const DEFAULT_DURATION_OPTIONS = [5, 10]
 const DEFAULT_MAX_COUNT = 4
 const MAX_STORYBOARD_VIDEO_COUNT = 4
+const MAX_AUTO_SPLIT_VIDEO_SECONDS = 24
+
+function supportsAutoSplitLongVideo(item?: UserModelListItem | null): boolean {
+  const code = String(item?.modelCode || '').toLowerCase()
+  const provider = String(item?.providerName || '').toLowerCase()
+  return code.includes('agnes-video-2.5') || code.includes('minimax-h3') || provider.includes('minimax')
+}
+
+function autoSplitNativeMax(item: UserModelListItem | null | undefined, declaredMax: number): number {
+  const code = String(item?.modelCode || '').toLowerCase()
+  // The bundled RTX 3090 H3 adapter is intentionally capped at 10 seconds.
+  return code.includes('minimax-h3') ? Math.min(10, declaredMax) : declaredMax
+}
 
 const DEFAULT_AUDIO_OPTIONS: SelectOption<string>[] = [
   { value: 'silent', label: '无声视频' },
@@ -301,6 +316,17 @@ export function parseModelCapability(item?: UserModelListItem | null, parameters
   snapshot.aspectRatioOptions = allowedParameterOptions(snapshot.aspectRatioOptions, constraints.get('aspectRatio') ?? constraints.get('options.aspectRatio'))
   snapshot.sizeOptions = allowedParameterOptions(snapshot.sizeOptions, constraints.get('size') ?? constraints.get('options.size') ?? constraints.get('options.resolution'))
   snapshot.durationOptions = allowedParameterOptions(snapshot.durationOptions, constraints.get('durationSeconds'))
+  if (supportsAutoSplitLongVideo(item) && snapshot.durationOptions.length > 0) {
+    const nativeMax = autoSplitNativeMax(item, Math.max(...snapshot.durationOptions))
+    snapshot.nativeMaxDurationSeconds = nativeMax
+    snapshot.durationOptions = [...new Set([
+      ...snapshot.durationOptions,
+      ...Array.from(
+        { length: Math.max(0, MAX_AUTO_SPLIT_VIDEO_SECONDS - nativeMax) },
+        (_, index) => nativeMax + index + 1
+      )
+    ])].sort((a, b) => a - b)
+  }
   const countConstraint = constraints.get('expectedImageCount')
   if (countConstraint) snapshot.countOptions = allowedParameterOptions(Array.from({ length: snapshot.maxOutputCount }, (_, index) => index + 1), countConstraint)
   const audioConstraint = constraints.get('audio')
@@ -366,7 +392,7 @@ export function buildDurationSelectOptions(
 ): SelectOption<string>[] {
   return snapshot.durationOptions.map((sec) => ({
     value: String(sec),
-    label: `${sec} s`
+    label: `${sec} s${snapshot.nativeMaxDurationSeconds != null && sec > snapshot.nativeMaxDurationSeconds ? '（自动分段合并）' : ''}`
   }))
 }
 

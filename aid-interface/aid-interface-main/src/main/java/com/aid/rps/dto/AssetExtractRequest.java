@@ -32,7 +32,8 @@ public class AssetExtractRequest
     /**
      * 提取范围（仅剧集生效，可空）：
      * EPISODE_INCREMENTAL=只分析当前集（剧集默认，episodeId 必填）；
-     * PROJECT_FULL=全项目剧本扫描（仅支持角色，用于首次初始化/主动全量分析）。
+     * PROJECT_FULL=全项目剧本扫描（仅支持角色，用于主动全量分析）；
+     * PROJECT_OUTLINE=只分析独立项目总纲，三类资产均创建为项目级资产。
      * 电影模式忽略本字段（恒为整部电影剧本）。
      */
     private String extractScope;

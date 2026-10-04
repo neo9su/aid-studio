@@ -76,6 +76,7 @@ import com.aid.rps.dto.FormImageGenerateRequest;
 import com.aid.rps.dto.FormCardImageGenerateRequest;
 import com.aid.rps.dto.FormGenerateRequest;
 import com.aid.rps.helper.AssetExtractHelper;
+import com.aid.rps.helper.ProjectOutlineSectionRouter;
 import com.aid.rps.helper.SceneExtractionNormalizer;
 import com.aid.rps.helper.SceneExtractionNormalizer.NormalizedScene;
 import com.aid.rps.model.ExistingAssetLib;
@@ -234,6 +235,9 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
 
     /** 提取范围：全项目扫描（仅角色，首次初始化/主动全量） */
     private static final String EXTRACT_SCOPE_PROJECT_FULL = "PROJECT_FULL";
+
+    /** 提取范围：独立项目总纲，三类资产均落项目级 episodeId=0 */
+    private static final String EXTRACT_SCOPE_PROJECT_OUTLINE = "PROJECT_OUTLINE";
 
     /** 角色主资产的项目级归属集（剧集角色跨集唯一，统一落 episodeId=0） */
     private static final Long CHARACTER_GLOBAL_EPISODE_ID = 0L;
@@ -641,6 +645,25 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
                 throw new ServiceException("剧本内容不能为空");
             }
         }
+        else if (Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, extractScope))
+        {
+            if (StrUtil.isBlank(helper.loadProjectOutline(request.getProjectId(), userId)))
+            {
+                throw new ServiceException("项目总纲不能为空");
+            }
+            // 私人自用项目在总纲导入时展示风险提醒，但不阻断资产初始化。
+            // 发布模式继续保留服务端兜底门禁，避免绕过前端直接提交。
+            if (!Objects.equals(com.aid.enums.ProjectComplianceProfileEnum.PRIVATE_ADULT.getValue(),
+                    project.getComplianceProfile()))
+            {
+                String safetyViolation = helper.describeProjectOutlineSafetyViolation(
+                        request.getProjectId(), userId);
+                if (StrUtil.isNotBlank(safetyViolation))
+                {
+                    throw new ServiceException(safetyViolation);
+                }
+            }
+        }
         else if (StrUtil.isBlank(helper.loadScriptContent(request.getProjectId(), episodeId, userId)))
         {
             throw new ServiceException("剧本内容不能为空");
@@ -837,6 +860,7 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         sseManager.sendStepProgress(taskId, "init", 5, "init", "初始化提取任务", 1, 3);
 
         AidComicProject project = projectService.selectAidComicProjectById(projectId);
+        String extractScope = resolveExtractScopeFromTask(taskId);
 
         sseManager.sendStepProgress(taskId, "loading_assets", 10, "load_assets", "加载已有资产库", 1, 1);
         // 去重库按项目级加载：场景以“地点_时间”作为资产身份，跨集命中同名资产时只新增剧情引用。
@@ -848,6 +872,7 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         List<RpsAssetVO> allAssets = rollingProgress.enabled
                 ? loadRollingCompletedAssets(rollingProgress, projectId, userId)
                 : new ArrayList<>();
+        List<String> missingOutlineCharacters = List.of();
 
         if (needCharacter && !isTaskCancelled(taskId))
         {
@@ -855,12 +880,27 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
             if (Objects.equals(PROJECT_TYPE_SERIES, project.getProjectType()))
             {
                 // 剧集角色主资产恒落项目级（episodeId=0，跨集唯一）；范围决定分析的剧本区间
-                String extractScope = resolveExtractScopeFromTask(taskId);
                 if (Objects.equals(EXTRACT_SCOPE_PROJECT_FULL, extractScope))
                 {
                     // 全量初始化：按10集/组分批扫描全项目剧本（先总后分）
                     extractSeriesCharacters(taskId, projectId, CHARACTER_GLOBAL_EPISODE_ID, userId,
                             allAssets, characterModelCode, lib, characterAgentCode, rollingProgress);
+                }
+                else if (Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, extractScope))
+                {
+                    List<ProjectOutlineSectionRouter.CharacterOutlineEntry> requiredCharacters =
+                            helper.loadProjectOutlineCharacterEntries(projectId, userId);
+                    String outline = helper.loadProjectOutlineForExtraction(projectId, userId,
+                            ProjectOutlineSectionRouter.TARGET_CHARACTER);
+                    if (StrUtil.isBlank(outline))
+                    {
+                        throw new ServiceException("项目总纲不能为空");
+                    }
+                    extractCharacters(taskId, outline, lib, projectId, CHARACTER_GLOBAL_EPISODE_ID,
+                            userId, allAssets, characterModelCode, characterAgentCode, rollingProgress);
+                    missingOutlineCharacters = supplementMissingOutlineCharacters(taskId,
+                            requiredCharacters, lib, projectId, CHARACTER_GLOBAL_EPISODE_ID, userId,
+                            allAssets, characterModelCode, characterAgentCode, rollingProgress);
                 }
                 else
                 {
@@ -909,7 +949,14 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         if (needScene || needProp)
         {
             sseManager.sendStepProgress(taskId, "loading_script_sp", 53, "load_script_sp", "加载场景道具剧本", 1, 1);
-            String scenePropScript = helper.loadScriptContent(projectId, episodeId, userId);
+            String scenePropScript = Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, extractScope)
+                    ? helper.loadProjectOutlineForExtraction(projectId, userId,
+                            needScene && needProp
+                                    ? ProjectOutlineSectionRouter.TARGET_SCENE_PROP
+                                    : needScene
+                                    ? ProjectOutlineSectionRouter.TARGET_SCENE
+                                    : ProjectOutlineSectionRouter.TARGET_PROP)
+                    : helper.loadScriptContent(projectId, episodeId, userId);
             if (StrUtil.isBlank(scenePropScript))
             {
                 throw new ServiceException("剧本内容不能为空");
@@ -929,15 +976,22 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         }
 
         // 场景道具部分失败时，不标记剧本已提取（允许续跑），抛 PartialExtractionException 让 Consumer 标记 PARTIAL_FAILED
-        if (!extractScenesAndPropsSuccess)
+        if (!extractScenesAndPropsSuccess || CollectionUtil.isNotEmpty(missingOutlineCharacters))
         {
-            log.warn("资产提取部分完成（场景道具阶段有 chunk 失败）: projectId={}, 已提取{}个资产, 类型={}",
-                    projectId, allAssets.size(), extractTypes);
-            sseManager.sendProgress(taskId, "partial", 85, "提取部分完成，可继续生成");
-            throw new PartialExtractionException("提取部分完成，可继续生成", allAssets);
+            String missingMessage = CollectionUtil.isEmpty(missingOutlineCharacters)
+                    ? "" : "；仍缺少角色：" + String.join("、", missingOutlineCharacters);
+            log.warn("资产提取部分完成: projectId={}, 已提取{}个资产, 类型={}, 场景道具成功={}, 缺失角色={}",
+                    projectId, allAssets.size(), extractTypes, extractScenesAndPropsSuccess,
+                    missingOutlineCharacters);
+            String partialMessage = "提取部分完成，可继续生成" + missingMessage;
+            sseManager.sendProgress(taskId, "partial", 85, partialMessage);
+            throw new PartialExtractionException(partialMessage, allAssets);
         }
 
-        helper.markScriptExtracted(projectId, episodeId, userId);
+        if (!Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, extractScope))
+        {
+            helper.markScriptExtracted(projectId, episodeId, userId);
+        }
 
         sseManager.sendProgress(taskId, "done", 98, "提取完成");
         log.info("资产提取完成: projectId={}, 共提取{}个资产, 类型={}", projectId, allAssets.size(), extractTypes);
@@ -945,12 +999,12 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
     }
     /**
      * 解析提取范围：电影恒为整部剧本（返回增量口径占位）；剧集默认增量，
-     * PROJECT_FULL 仅支持角色（场景/道具资产按集归属，全量扫描无归属集）。
+     * PROJECT_FULL 仅支持角色；PROJECT_OUTLINE 从独立总纲创建项目级三类资产。
      *
      * @param requestScope 请求范围（可空）
      * @param projectType  项目类型
      * @param extractTypes 提取类型
-     * @return 生效范围（EPISODE_INCREMENTAL / PROJECT_FULL）
+     * @return 生效范围（EPISODE_INCREMENTAL / PROJECT_FULL / PROJECT_OUTLINE）
      */
     private String resolveExtractScope(String requestScope, String projectType, List<String> extractTypes)
     {
@@ -962,7 +1016,8 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         String scope = StrUtil.blankToDefault(requestScope, EXTRACT_SCOPE_EPISODE_INCREMENTAL)
                 .trim().toUpperCase();
         if (!Objects.equals(EXTRACT_SCOPE_EPISODE_INCREMENTAL, scope)
-                && !Objects.equals(EXTRACT_SCOPE_PROJECT_FULL, scope))
+                && !Objects.equals(EXTRACT_SCOPE_PROJECT_FULL, scope)
+                && !Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, scope))
         {
             log.info("提取范围非法: scope={}", requestScope);
             throw new ServiceException("提取范围有误");
@@ -1923,7 +1978,9 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
             // 与执行阶段同口径：剧集全量=全项目分组剧本；剧集增量=当前集剧本；电影=整部剧本
             boolean seriesFullScan = Objects.equals(PROJECT_TYPE_SERIES, project.getProjectType())
                     && Objects.equals(EXTRACT_SCOPE_PROJECT_FULL, context.extractScope());
+            boolean projectOutline = Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, context.extractScope());
             String characterStage = seriesFullScan ? "character_series"
+                    : projectOutline ? "character_outline"
                     : Objects.equals(PROJECT_TYPE_SERIES, project.getProjectType())
                     ? "character_incremental" : "character";
             List<String> characterScripts;
@@ -1931,6 +1988,12 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
             {
                 characterScripts = helper.loadGroupedScriptsContent(
                         context.projectId(), SERIES_EPISODE_GROUP_SIZE, context.userId());
+            }
+            else if (projectOutline)
+            {
+                characterScripts = List.of(StrUtil.nullToEmpty(
+                        helper.loadProjectOutlineForExtraction(context.projectId(), context.userId(),
+                                ProjectOutlineSectionRouter.TARGET_CHARACTER)));
             }
             else if (Objects.equals(PROJECT_TYPE_SERIES, project.getProjectType()))
             {
@@ -1959,7 +2022,14 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
 
         if (extractTypes.contains(EXTRACT_TYPE_SCENE) || extractTypes.contains(EXTRACT_TYPE_PROP))
         {
-            String script = helper.loadScriptContent(context.projectId(), context.episodeId(), context.userId());
+            String script = Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, context.extractScope())
+                    ? helper.loadProjectOutlineForExtraction(context.projectId(), context.userId(),
+                            extractTypes.contains(EXTRACT_TYPE_SCENE) && extractTypes.contains(EXTRACT_TYPE_PROP)
+                                    ? ProjectOutlineSectionRouter.TARGET_SCENE_PROP
+                                    : extractTypes.contains(EXTRACT_TYPE_SCENE)
+                                    ? ProjectOutlineSectionRouter.TARGET_SCENE
+                                    : ProjectOutlineSectionRouter.TARGET_PROP)
+                    : helper.loadScriptContent(context.projectId(), context.episodeId(), context.userId());
             List<String> chunks = helper.chunkContent(StrUtil.nullToEmpty(script), CHUNK_SIZE_SCENE_PROP);
             String sceneTemplate = extractTypes.contains(EXTRACT_TYPE_SCENE)
                     ? helper.loadPromptByNameReadOnly(StrUtil.blankToDefault(
@@ -2011,11 +2081,12 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
     private AidComicProject validateProject(Long projectId, Long userId)
     {
         // 使用MyBatis-Plus同时校验项目存在性和归属权
-        // 注意：select 中新增 videoStyleType/videoStyleValue，用于 requireProjectStyle 校验，不能再收窄
+        // 注意：风格字段用于 requireProjectStyle；complianceProfile 用于总纲风险门禁分流，不能再收窄。
         AidComicProject project = projectService.getOne(
                 Wrappers.<AidComicProject>lambdaQuery()
                         .select(AidComicProject::getId, AidComicProject::getProjectType,
-                                AidComicProject::getVideoStyleType, AidComicProject::getVideoStyleValue)
+                                AidComicProject::getVideoStyleType, AidComicProject::getVideoStyleValue,
+                                AidComicProject::getComplianceProfile)
                         .eq(AidComicProject::getId, projectId)
                         .eq(AidComicProject::getUserId, userId)
                         .eq(AidComicProject::getDelFlag, DEL_FLAG_NORMAL));
@@ -2091,6 +2162,11 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         {
             return 0L;
         }
+        // 独立总纲初始化：角色/场景/道具均归属项目级 episodeId=0。
+        if (Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, extractScope))
+        {
+            return 0L;
+        }
         // 剧集增量提取（角色/场景/道具均分析当前集）：episodeId 必填
         if (Objects.isNull(requestEpisodeId) || requestEpisodeId <= 0L)
         {
@@ -2162,7 +2238,7 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
      * 从任务记录的 inputSnapshot 解析提取范围；缺失（CSV 快照等）回退增量口径。
      *
      * @param taskId 任务ID
-     * @return 提取范围（EPISODE_INCREMENTAL / PROJECT_FULL）
+     * @return 提取范围（EPISODE_INCREMENTAL / PROJECT_FULL / PROJECT_OUTLINE）
      */
     @SuppressWarnings("unchecked")
     private String resolveExtractScopeFromTask(Long taskId)
@@ -2184,6 +2260,10 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
             if (Objects.nonNull(scope) && EXTRACT_SCOPE_PROJECT_FULL.equals(String.valueOf(scope).trim()))
             {
                 return EXTRACT_SCOPE_PROJECT_FULL;
+            }
+            if (Objects.nonNull(scope) && EXTRACT_SCOPE_PROJECT_OUTLINE.equals(String.valueOf(scope).trim()))
+            {
+                return EXTRACT_SCOPE_PROJECT_OUTLINE;
             }
         }
         catch (Exception e)
@@ -2520,7 +2600,8 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         }
         else
         {
-            replayValidator = this::isValidCharacterExtractResult;
+            boolean requireCharacterOutput = StrUtil.isNotBlank(userInputs.get("required_character_names"));
+            replayValidator = result -> isValidCharacterExtractResult(result, requireCharacterOutput);
         }
         int outputTokenCap = helper.resolveStructuredOutputTokens(
                 StrUtil.length(userInputs.get("input")), 1);
@@ -2533,6 +2614,11 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
 
     private boolean isValidCharacterExtractResult(JsonNode result)
     {
+        return isValidCharacterExtractResult(result, false);
+    }
+
+    boolean isValidCharacterExtractResult(JsonNode result, boolean requireNonEmpty)
+    {
         if (Objects.isNull(result) || !result.isObject())
         {
             return false;
@@ -2542,6 +2628,12 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         boolean hasNewArray = Objects.nonNull(newCharacters) && newCharacters.isArray();
         boolean hasUpdatedArray = Objects.nonNull(updatedCharacters) && updatedCharacters.isArray();
         if (!hasNewArray && !hasUpdatedArray)
+        {
+            return false;
+        }
+        if (requireNonEmpty
+                && (!hasNewArray || newCharacters.isEmpty())
+                && (!hasUpdatedArray || updatedCharacters.isEmpty()))
         {
             return false;
         }
@@ -2763,6 +2855,7 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         // 记录本轮之前已有的角色数，用于计算本轮新增
         int prevAssetCount = allAssets.size();
         Map<String, Integer> sourceOccurrences = new HashMap<>();
+        String outlineRequiredNames = extractOutlineRequiredNames(scriptContent);
 
         for (int i = 0; i < totalChunks; i++)
         {
@@ -2788,6 +2881,11 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
                 // 模板化调用 → prompt_content 走 system，动态入参走结构化 user message
                 Map<String, String> userInputs = new LinkedHashMap<>();
                 userInputs.put("input", chunk);
+                if (i == 0 && StrUtil.isNotBlank(outlineRequiredNames))
+                {
+                    // 总纲首块携带权威角色清单：两个空数组不再被视为有效成功结果。
+                    userInputs.put("required_character_names", outlineRequiredNames);
+                }
                 userInputs.put("characters_lib_info", charactersLibInfo);
                 userInputs.put("characters_lib_name", charactersLibName);
                 // aid_media_task.prompt 列只存动态入参（chunk + 已有角色库），不存模板正文
@@ -2843,6 +2941,147 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
 
         log.info("角色切片提取完成: 切片={}", totalChunks);
     }
+
+    String extractOutlineRequiredNames(String content)
+    {
+        if (StrUtil.isBlank(content))
+        {
+            return null;
+        }
+        String marker = "【角色标题清单（权威清单，必须逐项提取，不得遗漏）：";
+        int start = content.indexOf(marker);
+        if (start < 0)
+        {
+            return null;
+        }
+        int valueStart = start + marker.length();
+        int end = content.indexOf('】', valueStart);
+        return end > valueStart ? content.substring(valueStart, end).trim() : null;
+    }
+
+    /**
+     * 总纲角色完整性兜底：Markdown 角色标题是权威清单。普通分块完成后逐项核对，
+     * 仅把缺失角色及其原始角色卡交给 LLM 补提；两次仍缺失则交由父流程收口为 PARTIAL_FAILED。
+     */
+    private List<String> supplementMissingOutlineCharacters(
+            Long taskId,
+            List<ProjectOutlineSectionRouter.CharacterOutlineEntry> requiredCharacters,
+            ExistingAssetLib lib, Long projectId, Long episodeId, Long userId,
+            List<RpsAssetVO> allAssets, String modelCode, String agentCode,
+            RollingExtractProgress rollingProgress)
+    {
+        if (CollectionUtil.isEmpty(requiredCharacters))
+        {
+            return List.of();
+        }
+        List<ProjectOutlineSectionRouter.CharacterOutlineEntry> missing =
+                findMissingOutlineCharacterEntries(requiredCharacters, projectId, userId);
+        if (missing.isEmpty())
+        {
+            return List.of();
+        }
+
+        String promptTemplate = helper.loadPromptByName(
+                StrUtil.blankToDefault(agentCode, PROMPT_NAME_CASTING));
+        Map<String, Integer> sourceOccurrences = new HashMap<>();
+        for (int attempt = 1; attempt <= 2 && !missing.isEmpty(); attempt++)
+        {
+            if (isTaskCancelled(taskId))
+            {
+                break;
+            }
+            List<String> requiredNames = missing.stream()
+                    .map(ProjectOutlineSectionRouter.CharacterOutlineEntry::name).toList();
+            String requiredNamesText = String.join("、", requiredNames);
+            StringBuilder repairInput = new StringBuilder()
+                    .append("【总纲角色完整性补提】\n")
+                    .append("以下角色来自总纲角色标题，是必须创建的权威清单：")
+                    .append(requiredNamesText).append("。\n")
+                    .append("每个名字都必须出现在 new_characters 中并补全描述；禁止返回空数组，")
+                    .append("禁止把这些缺失角色放入 updated_characters。\n\n");
+            for (ProjectOutlineSectionRouter.CharacterOutlineEntry entry : missing)
+            {
+                repairInput.append(entry.content()).append("\n\n");
+            }
+            String input = repairInput.toString().trim();
+            sseManager.sendStepProgress(taskId, "repairing_characters", 48,
+                    "character_outline_repair_" + attempt,
+                    "正在补提缺失角色：" + requiredNamesText, attempt, 2);
+            try
+            {
+                String charactersLibInfo = helper.loadCharactersLibInfo(projectId);
+                String charactersLibName = lib.getCharacterNamesJoined();
+                Map<String, String> userInputs = new LinkedHashMap<>();
+                userInputs.put("input", input);
+                userInputs.put("required_character_names", requiredNamesText);
+                userInputs.put("characters_lib_info", charactersLibInfo);
+                userInputs.put("characters_lib_name", charactersLibName);
+                String digest = buildCharacterTaskDigest(input, charactersLibInfo, charactersLibName);
+                String stableSlot = buildStableAssetChunkSlot(
+                        "character_outline_repair_" + attempt, input, sourceOccurrences);
+                String callIdentity = helper.buildLlmCallIdentity(
+                        stableSlot, promptTemplate, userInputs, modelCode);
+                if (!rollingProgress.isCompleted(stableSlot))
+                {
+                    JsonNode result = callOrReplayExtractLlm(promptTemplate, userInputs, modelCode,
+                            taskId, userId, digest, callIdentity, rollingProgress,
+                            BIZ_CATEGORY_MAIN_CHARACTER_EXTRACT);
+                    persistExtractCallResult(taskId, userId, stableSlot, result, allAssets,
+                            rollingProgress,
+                            node -> parseAndPersistCharacters(node, lib, projectId, episodeId,
+                                    userId, allAssets, rollingProgress.enabled));
+                }
+            }
+            catch (TextTaskExecutionRejectedException e)
+            {
+                throw e;
+            }
+            catch (Exception e)
+            {
+                // 主分块已有结果时，补提失败应保留已完成资产并进入 PARTIAL_FAILED，而不是整批失败回滚。
+                log.warn("总纲缺失角色第{}次补提失败: taskId={}, names={}, error={}",
+                        attempt, taskId, requiredNamesText, e.getMessage(), e);
+            }
+            missing = findMissingOutlineCharacterEntries(requiredCharacters, projectId, userId);
+        }
+        return missing.stream().map(ProjectOutlineSectionRouter.CharacterOutlineEntry::name).toList();
+    }
+
+    private List<ProjectOutlineSectionRouter.CharacterOutlineEntry> findMissingOutlineCharacterEntries(
+            List<ProjectOutlineSectionRouter.CharacterOutlineEntry> requiredCharacters,
+            Long projectId, Long userId)
+    {
+        List<AidRolePropScene> existing = rpsService.list(
+                Wrappers.<AidRolePropScene>lambdaQuery()
+                        .select(AidRolePropScene::getName, AidRolePropScene::getAliasesName)
+                        .eq(AidRolePropScene::getProjectId, projectId)
+                        .eq(AidRolePropScene::getUserId, userId)
+                        .eq(AidRolePropScene::getAssetType, ASSET_TYPE_CHARACTER)
+                        .eq(AidRolePropScene::getDelFlag, DEL_FLAG_NORMAL));
+        Set<String> existingKeys = new HashSet<>();
+        for (AidRolePropScene row : existing)
+        {
+            if (StrUtil.isNotBlank(row.getName()))
+            {
+                existingKeys.add(helper.normalizeOutlineCharacterKey(row.getName()));
+            }
+            if (StrUtil.isNotBlank(row.getAliasesName()))
+            {
+                for (String alias : row.getAliasesName().split("[,，、]"))
+                {
+                    if (StrUtil.isNotBlank(alias))
+                    {
+                        existingKeys.add(helper.normalizeOutlineCharacterKey(alias));
+                    }
+                }
+            }
+        }
+        return requiredCharacters.stream()
+                .filter(entry -> !existingKeys.contains(
+                        helper.normalizeOutlineCharacterKey(entry.name())))
+                .toList();
+    }
+
     /**
      * 剧集模式角色提取：按10集/组分批提取，每组独立切片+LLM调用，组间累积去重
      * 60集 = 6组 × 10集，每组内合并文本后按30000字切片提取角色。
@@ -3100,6 +3339,17 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
                 result.put("characterEstimatedCallCount",
                         estimateChunkCallCount(totalChars, CHUNK_SIZE_CHARACTER));
             }
+            else if (isSeries && Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, extractScope))
+            {
+                int totalChars = StrUtil.length(helper.loadProjectOutlineForExtraction(
+                        request.getProjectId(), userId,
+                        ProjectOutlineSectionRouter.TARGET_CHARACTER));
+                result.put("characterTotalChars", totalChars);
+                result.put("characterGroupCount", 1);
+                result.put("characterGroupName", "项目总纲");
+                result.put("characterEstimatedCallCount",
+                        estimateChunkCallCount(totalChars, CHUNK_SIZE_CHARACTER));
+            }
             else
             {
                 // 剧集增量（当前集）/ 电影（episodeId=0）：按该集剧本字数预估
@@ -3115,7 +3365,15 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         // 场景+道具提取预估
         if (needScene || needProp)
         {
-            int scenePropChars = helper.countScriptCharacters(request.getProjectId(), episodeId, userId);
+            int scenePropChars = Objects.equals(EXTRACT_SCOPE_PROJECT_OUTLINE, extractScope)
+                    ? StrUtil.length(helper.loadProjectOutlineForExtraction(
+                            request.getProjectId(), userId,
+                            needScene && needProp
+                                    ? ProjectOutlineSectionRouter.TARGET_SCENE_PROP
+                                    : needScene
+                                    ? ProjectOutlineSectionRouter.TARGET_SCENE
+                                    : ProjectOutlineSectionRouter.TARGET_PROP))
+                    : helper.countScriptCharacters(request.getProjectId(), episodeId, userId);
             result.put("scenePropTotalChars", scenePropChars);
             result.put("scenePropTypes", extractTypes.stream()
                     .filter(t -> "scene".equals(t) || "prop".equals(t))
@@ -7340,10 +7598,10 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         FormGenerateValidated first = validatedList.get(0);
         for (FormGenerateValidated validated : validatedList)
         {
-            if (!Objects.equals(first.asset.getProjectId(), validated.asset.getProjectId())
-                    || !Objects.equals(first.asset.getEpisodeId(), validated.asset.getEpisodeId()))
+            // 同一项目内允许跨剧集批量（基础库 episode=0 + 当前集）：consumer 逐项处理、与剧集无关
+            if (!Objects.equals(first.asset.getProjectId(), validated.asset.getProjectId()))
             {
-                log.info("批量形态生成禁止跨项目剧集: userId={}, assetIds={}", userId, uniqueAssetIds);
+                log.info("批量形态生成禁止跨项目: userId={}, assetIds={}", userId, uniqueAssetIds);
                 throw new ServiceException("素材归属不一致");
             }
         }
@@ -10488,10 +10746,10 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
         FormImageValidated first = validatedList.get(0);
         for (FormImageValidated validated : validatedList)
         {
-            if (!Objects.equals(first.asset.getProjectId(), validated.asset.getProjectId())
-                    || !Objects.equals(first.form.getEpisodeId(), validated.form.getEpisodeId()))
+            // 同一项目内允许跨剧集批量（基础库 episode=0 + 当前集）：consumer 按 formId 逐项处理、与剧集无关，计费按项
+            if (!Objects.equals(first.asset.getProjectId(), validated.asset.getProjectId()))
             {
-                log.info("批量形态图禁止跨项目剧集: userId={}, formIds={}", userId, uniqueFormIds);
+                log.info("批量形态图禁止跨项目: userId={}, formIds={}", userId, uniqueFormIds);
                 throw new ServiceException("素材归属不一致");
             }
         }
@@ -11020,10 +11278,10 @@ public class AssetExtractServiceImpl implements IAssetExtractService, com.aid.rp
 
         for (CardImageValidated validated : validatedList)
         {
-            if (!Objects.equals(first.asset.getProjectId(), validated.asset.getProjectId())
-                    || !Objects.equals(first.asset.getEpisodeId(), validated.asset.getEpisodeId()))
+            // 同一项目内允许跨剧集批量（基础库 episode=0 + 当前集）：consumer 逐项处理、与剧集无关
+            if (!Objects.equals(first.asset.getProjectId(), validated.asset.getProjectId()))
             {
-                log.info("批量设定卡禁止跨项目剧集: userId={}, imageIds={}", userId, uniqueImageIds);
+                log.info("批量设定卡禁止跨项目: userId={}, imageIds={}", userId, uniqueImageIds);
                 throw new ServiceException("素材归属不一致");
             }
         }

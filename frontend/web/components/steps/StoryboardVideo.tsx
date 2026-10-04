@@ -19,7 +19,7 @@
  */
 
 import { Suspense, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Tooltip, message } from 'antd'
+import { Button, Progress, Tooltip, message } from 'antd'
 import {
   DeleteOutlined,
   LoadingOutlined,
@@ -43,7 +43,8 @@ import {
   isStoryboardVideoModalRestoreFollowing,
   activeStoryboardVideoModalOwnedFollowIds
 } from '~/composables/useStoryboardVideoBatchGenerate'
-import { suspendTaskSseFollow } from '~/composables/useTaskSseFollow'
+import { resolveTaskSseDisplayProgress } from '~/utils/taskSseProgressText'
+import { suspendTaskSseFollow, resolveUserTaskTerminalOutcome } from '~/composables/useTaskSseFollow'
 import { findStoryboardVideoGenTaskInScopes } from '~/composables/useCreationStoreHydration'
 import { modalGenSessionScopeFromStore } from '~/utils/modalGenSessionScope'
 import {
@@ -366,6 +367,76 @@ export function StoryboardVideo({
     }
     return `${videoProgress.completed}/${videoProgress.total}`
   })()
+  const batchProgressPercent = (() => {
+    if (!isGeneratingVideo) return undefined
+    const etaProgress = resolveTaskSseDisplayProgress({ eta: videoBatchProgress.eta })
+    if (etaProgress != null) return etaProgress
+    if (videoBatchProgress.total <= 0) return undefined
+    return Math.round(
+      Math.min(100, Math.max(0, videoBatchProgress.completed * 100 / videoBatchProgress.total))
+    )
+  })()
+
+  // ---- 进度停滞检测 + 手动刷新（防 SSE 超时/断连后 UI 永久冻结且无提示）----
+  const [stalledSeconds, setStalledSeconds] = useState(0)
+  const [refreshingNow, setRefreshingNow] = useState(false)
+  const stallAnchorRef = useRef<{ completed: number; at: number } | null>(null)
+
+  useEffect(() => {
+    if (!isGeneratingVideo || videoBatchProgress.total <= 0) {
+      stallAnchorRef.current = null
+      setStalledSeconds(0)
+      return
+    }
+    const check = () => {
+      const completed = videoBatchProgress.completed
+      const total = videoBatchProgress.total
+      const now = Date.now()
+      const anchor = stallAnchorRef.current
+      if (!anchor || anchor.completed !== completed) {
+        stallAnchorRef.current = { completed, at: now }
+        setStalledSeconds(0)
+        return
+      }
+      if (completed >= total) {
+        setStalledSeconds(0)
+        return
+      }
+      const idle = now - anchor.at
+      if (idle > 10 * 60 * 1000) {
+        setStalledSeconds(Math.floor(idle / 1000))
+      }
+    }
+    check()
+    const timer = setInterval(check, 15_000)
+    return () => clearInterval(timer)
+  }, [isGeneratingVideo, videoBatchProgress.completed, videoBatchProgress.total])
+
+  async function refreshNow() {
+    if (refreshingNow) return
+    setRefreshingNow(true)
+    try {
+      const store = useCreationStore.getState()
+      const taskId = store.storyboardVideoBatchActiveVideoTaskId
+      if (taskId != null && taskId > 0) {
+        const resolved = await resolveUserTaskTerminalOutcome(taskId, { force: true })
+        if (resolved.kind === 'ongoing' && resolved.detail?.eta) {
+          store.applyStoryboardVideoBatchSseProgress({
+            taskId,
+            status: resolved.detail.status,
+            progress:
+              typeof resolved.detail.eta.displayProgress === 'number'
+                ? resolved.detail.eta.displayProgress
+                : undefined,
+            eta: resolved.detail.eta
+          })
+        }
+      }
+      window.dispatchEvent(new CustomEvent('create-flow-global-tasks-updated'))
+    } finally {
+      setRefreshingNow(false)
+    }
+  }
 
   /** 卡片失败：仅以 store 持久化状态为准，避免 panel 本地脏数据污染；已设置主视频则不再展示失败 */
   function panelVideoGenerateError(
@@ -643,6 +714,17 @@ export function StoryboardVideo({
           </div>
           <div className="storyboard-progress">
             <span>视频完成进度：{progressText}</span>
+            {isGeneratingVideo ? (
+              <Progress
+                className="storyboard-progress-bar"
+                percent={batchProgressPercent ?? 0}
+                showInfo={batchProgressPercent != null}
+                size="small"
+                status="active"
+                strokeColor={{ from: '#24d8f4', to: '#246bff' }}
+                trailColor="rgba(255, 255, 255, 0.12)"
+              />
+            ) : null}
             {isGeneratingVideo || isSyncGeneratingStoryboard ? (
               <LoadingOutlined className="storyboard-progress-loading" spin />
             ) : null}
@@ -684,6 +766,30 @@ export function StoryboardVideo({
           </Tooltip>
         </div>
       </div>
+
+      {isGeneratingVideo && videoBatchProgress.total > 0 ? (
+        <div className="storyboard-progress-alert-bar">
+          <span className="storyboard-progress-alert-counts">
+            已处理 {videoBatchProgress.completed}/{videoBatchProgress.total}
+            {videoBatchProgress.successCount > 0 ? ` · 成功 ${videoBatchProgress.successCount}` : ''}
+            {videoBatchProgress.failCount > 0 ? ` · 失败 ${videoBatchProgress.failCount}` : ''}
+            {videoBatchProgress.stepTitle ? ` · ${videoBatchProgress.stepTitle}` : ''}
+          </span>
+          {stalledSeconds > 0 ? (
+            <span className="storyboard-progress-stalled" role="status">
+              ⚠ 进度已 {Math.floor(stalledSeconds / 60)} 分钟未更新，任务可能仍在后台执行
+              <Button
+                size="small"
+                className="storyboard-progress-refresh-btn"
+                loading={refreshingNow}
+                onClick={() => void refreshNow()}
+              >
+                立即刷新状态
+              </Button>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         className={`storyboard-step-shell storyboard-video-empty${

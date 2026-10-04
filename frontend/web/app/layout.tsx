@@ -58,7 +58,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body>
+      <body suppressHydrationWarning>
         <PublicSiteHead />
         <AntdRegistry>
           <AntdThemeProvider>

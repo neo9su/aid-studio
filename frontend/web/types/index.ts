@@ -71,6 +71,8 @@ export interface GlobalSettingData {
   genre: string
   style: string
   description: string
+  /** 项目内容与发布合规模式 */
+  complianceProfile: import('~/utils/projectComplianceProfile').ProjectComplianceProfile
   // 画面比例
   aspectRatio: '16:9' | '9:16' | '4:3' | '3:4' | '1:1' | '21:9'
   // 剧本类型（ScriptTypeEnum）

@@ -35,6 +35,7 @@ import com.aid.rps.voice.dto.RoleVoiceBindRequest;
 import com.aid.rps.voice.service.IRoleVoiceBindingBusinessService;
 import com.aid.rps.voice.vo.RoleVoiceBindingVO;
 import com.aid.voice.util.VoiceEmotionCapability;
+import com.aid.voice.util.VoiceLibraryOwnership;
 
 import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.util.StrUtil;
@@ -104,7 +105,7 @@ public class RoleVoiceBindingBusinessServiceImpl implements IRoleVoiceBindingBus
         }
         AidRolePropScene asset = loadOwnedCharacter(request.getAssetId(), userId);
 
-        AidAiVoiceLibrary voice = loadActiveVoiceLibrary(request.getVoiceLibraryId());
+        AidAiVoiceLibrary voice = loadActiveVoiceLibrary(request.getVoiceLibraryId(), userId);
 
         validateOverrideSpeed(request.getOverrideSpeed());
         validateOverridePitch(request.getOverridePitch());
@@ -449,12 +450,17 @@ public class RoleVoiceBindingBusinessServiceImpl implements IRoleVoiceBindingBus
     /**
      * 校验音色：存在、未删除、status=启用、offline_time 大于 NOW()。
      */
-    private AidAiVoiceLibrary loadActiveVoiceLibrary(Long voiceLibraryId)
+    private AidAiVoiceLibrary loadActiveVoiceLibrary(Long voiceLibraryId, Long userId)
     {
         AidAiVoiceLibrary voice = voiceLibraryService.getById(voiceLibraryId);
         if (Objects.isNull(voice) || !Objects.equals(DEL_FLAG_NORMAL, voice.getDelFlag()))
         {
             log.info("角色音色绑定失败，音色不存在: voiceLibraryId={}", voiceLibraryId);
+            throw new RuntimeException("音色不存在");
+        }
+        if (!VoiceLibraryOwnership.canUse(voice, userId))
+        {
+            log.info("角色音色绑定失败，用户无权使用私有音色: voiceLibraryId={}, userId={}", voiceLibraryId, userId);
             throw new RuntimeException("音色不存在");
         }
         if (Objects.equals(STATUS_DISABLED, voice.getStatus()))

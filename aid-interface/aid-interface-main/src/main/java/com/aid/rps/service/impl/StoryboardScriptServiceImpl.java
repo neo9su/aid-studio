@@ -70,6 +70,8 @@ import com.aid.enums.StoryboardShotDensityEnum;
 import com.aid.rps.dto.AssetExtractTaskVO;
 import com.aid.rps.dto.ExtractTaskMessage;
 import com.aid.rps.dto.StoryboardScriptBatchRequest;
+import com.aid.rps.dto.StoryboardScriptReviewRequest;
+import com.aid.rps.dto.StoryboardScriptReviewVO;
 import com.aid.rps.helper.AssetExtractHelper;
 import com.aid.rps.helper.ProjectGenerateLockGuard;
 import com.aid.rps.helper.StoryboardDirectRefundExecutor;
@@ -84,6 +86,7 @@ import com.aid.rps.helper.StoryboardShotGroupSplitPromptBuilder;
 import com.aid.rps.helper.StoryboardScriptBatchPlanner;
 import com.aid.rps.helper.StoryboardScriptBatchPlanner.BatchPlanItem;
 import com.aid.rps.helper.StoryboardScriptCoveragePlanner;
+import com.aid.rps.helper.StoryboardScriptReviewDiff;
 import com.aid.rps.helper.StoryboardScriptCoveragePlanner.CoverageBatch;
 import com.aid.rps.helper.StoryboardScriptCoveragePlanner.CoveragePlan;
 import com.aid.rps.helper.StoryboardTimelineNumbering;
@@ -240,6 +243,10 @@ public class StoryboardScriptServiceImpl implements IStoryboardScriptService
     private static final String COVERAGE_PLAN_VERSION = "coveragePlanVersion";
     private static final String COVERAGE_PLAN_HASH = "coveragePlanHash";
     private static final String COVERAGE_BATCH_COUNT = "coverageBatchCount";
+    /** 覆盖生成前归档的原分镜 ID；用于任务完成后的逐条差异审核与恢复。 */
+    private static final String REVIEW_SOURCE_STORYBOARD_IDS = "reviewSourceStoryboardIds";
+    /** 用户是否已经确认过该任务的候选分镜。 */
+    private static final String REVIEW_APPLIED = "reviewApplied";
     /** 分镜派生场次的来源标识。 */
     private static final String SCENE_PLOT_SOURCE_STORYBOARD = "storyboard";
 
@@ -678,6 +685,11 @@ public class StoryboardScriptServiceImpl implements IStoryboardScriptService
             inputMap.put(COVERAGE_PLAN_VERSION, StoryboardScriptCoveragePlanner.PLAN_VERSION);
             inputMap.put(COVERAGE_PLAN_HASH, sha256Hex(coveragePlan.signatureMaterial()));
             inputMap.put(COVERAGE_BATCH_COUNT, coveragePlan.batches().size());
+            List<Long> reviewSourceIds = overwriteFlag
+                    ? loadOverwriteReviewSourceIds(projectId, episodeId, userId, sceneIds, selective)
+                    : List.of();
+            inputMap.put(REVIEW_SOURCE_STORYBOARD_IDS, reviewSourceIds);
+            inputMap.put(REVIEW_APPLIED, false);
             batchTaskSlotService.attachSnapshotMetadata(inputMap, slotReservation);
 
             // 保存任务
@@ -1260,7 +1272,9 @@ public class StoryboardScriptServiceImpl implements IStoryboardScriptService
         {
             throw new ServiceException("模型未配置");
         }
-        String promptTemplate = helper.loadPromptByNameReadOnly(agentCode);
+        boolean writerOutput = AGENT_CODE_STORYBOARD_WRITER.equals(agentCode);
+        String promptTemplate = sceneEnvelopeParser.enforceDirectOutputContract(
+                helper.loadPromptByNameReadOnly(agentCode), writerOutput);
         String assetDictionary = buildDirectAssetDictionary(projectId, episodeId, userId, sceneList);
         ShotDensityFloorConfig floorConfig = loadShotDensityFloorConfig();
         boolean injectFloor = SHOT_FLOOR_AGENT_CODES.contains(agentCode);
@@ -1691,11 +1705,12 @@ public class StoryboardScriptServiceImpl implements IStoryboardScriptService
             StoryboardDirectWritePolicy.Decision firstWritePolicy =
                     StoryboardDirectWritePolicy.decide(overwrite, hasPersistedTaskShots, selective);
 
-            String promptTemplate = helper.loadPromptByName(agentCode);
+            boolean writerOutput = AGENT_CODE_STORYBOARD_WRITER.equals(agentCode);
+            String promptTemplate = sceneEnvelopeParser.enforceDirectOutputContract(
+                    helper.loadPromptByName(agentCode), writerOutput);
             String assetDictionary = buildDirectAssetDictionary(projectId, episodeId, userId, sceneList);
             ShotDensityFloorConfig floorConfig = loadShotDensityFloorConfig();
             boolean injectFloor = SHOT_FLOOR_AGENT_CODES.contains(agentCode);
-            boolean writerOutput = AGENT_CODE_STORYBOARD_WRITER.equals(agentCode);
             List<AidRolePropScene> characterAssets = rpsService.list(
                     Wrappers.<AidRolePropScene>lambdaQuery()
                             .eq(AidRolePropScene::getProjectId, projectId)
@@ -5970,7 +5985,7 @@ public class StoryboardScriptServiceImpl implements IStoryboardScriptService
     }
 
     /**
-     * 整批落库：先硬删除旧分镜（仅当 overwrite=true 且批内有成功项），再批量写入新分镜。
+     * 整批落库：先归档旧分镜（仅当 overwrite=true 且批内有成功项），再批量写入新分镜。
      */
     public void persistAllShots(Long projectId, Long episodeId, Long userId,
                                  List<Long> sceneIds,
@@ -6028,26 +6043,51 @@ public class StoryboardScriptServiceImpl implements IStoryboardScriptService
     }
 
     /**
-     * 覆盖式生成的「一次性删除」：把该剧集（或本次涉及场景）已落库的旧分镜硬删除。
+     * 覆盖式生成的「一次性归档」：旧分镜保留在库中，供生成完成后的差异审核恢复。
      *
-     * @param sceneIds  本次涉及的场景ID集合（selective 时按此过滤删除范围）
-     * @param selective true=仅删本次涉及场景（sceneIds）的旧分镜；false=删整集旧分镜
+     * @param sceneIds  本次涉及的场景ID集合（selective 时按此过滤归档范围）
+     * @param selective true=仅归档本次涉及场景；false=归档整集旧分镜
      */
     private void deleteShotsForOverwrite(Long projectId, Long episodeId, Long userId,
                                          List<Long> sceneIds, boolean selective)
     {
-        LambdaQueryWrapper<AidStoryboard> deleteWrapper = Wrappers.lambdaQuery();
+        LambdaUpdateWrapper<AidStoryboard> deleteWrapper = Wrappers.lambdaUpdate();
         deleteWrapper.eq(AidStoryboard::getProjectId, projectId);
         deleteWrapper.eq(AidStoryboard::getEpisodeId, episodeId);
         deleteWrapper.eq(AidStoryboard::getUserId, userId);
+        deleteWrapper.eq(AidStoryboard::getDelFlag, DEL_FLAG_NORMAL);
         if (selective && CollectionUtil.isNotEmpty(sceneIds))
         {
-            // 仅删除本次涉及场景的既有分镜，避免影响其它场景数据
+            // 仅归档本次涉及场景的既有分镜，避免影响其它场景数据
             deleteWrapper.in(AidStoryboard::getSourceSceneId, sceneIds);
         }
-        boolean removed = storyboardService.remove(deleteWrapper);
-        log.info("分镜脚本覆盖硬删除旧分镜完成: projectId={}, episodeId={}, selective={}, removed={}",
-                projectId, episodeId, selective, removed);
+        deleteWrapper.set(AidStoryboard::getDelFlag, DEL_FLAG_DELETED);
+        deleteWrapper.set(AidStoryboard::getUpdateTime, DateUtils.getNowDate());
+        deleteWrapper.set(AidStoryboard::getUpdateBy, String.valueOf(userId));
+        boolean archived = storyboardService.update(deleteWrapper);
+        log.info("分镜脚本覆盖归档旧分镜完成: projectId={}, episodeId={}, selective={}, archived={}",
+                projectId, episodeId, selective, archived);
+    }
+
+    private List<Long> loadOverwriteReviewSourceIds(Long projectId, Long episodeId, Long userId,
+                                                    List<Long> sceneIds, boolean selective)
+    {
+        LambdaQueryWrapper<AidStoryboard> query = Wrappers.lambdaQuery();
+        query.select(AidStoryboard::getId)
+                .eq(AidStoryboard::getProjectId, projectId)
+                .eq(AidStoryboard::getEpisodeId, episodeId)
+                .eq(AidStoryboard::getUserId, userId)
+                .eq(AidStoryboard::getDelFlag, DEL_FLAG_NORMAL)
+                .orderByAsc(AidStoryboard::getSortOrder)
+                .orderByAsc(AidStoryboard::getId);
+        if (selective && CollectionUtil.isNotEmpty(sceneIds))
+        {
+            query.in(AidStoryboard::getSourceSceneId, sceneIds);
+        }
+        return storyboardService.list(query).stream()
+                .map(AidStoryboard::getId)
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     /**
@@ -6904,6 +6944,247 @@ public class StoryboardScriptServiceImpl implements IStoryboardScriptService
             sb.append(key).append("：").append(strVal);
         }
         return sb.toString();
+    }
+
+    @Override
+    public StoryboardScriptReviewVO getStoryboardScriptReview(Long taskId, Long userId)
+    {
+        AidExtractTask task = requireReviewTask(taskId, userId);
+        JsonNode snapshot = readTaskSnapshot(task);
+        List<Long> originalIds = readLongIds(snapshot.path(REVIEW_SOURCE_STORYBOARD_IDS));
+        List<Long> suggestionIds = loadReviewSuggestionIds(taskId);
+        List<AidStoryboard> originals = loadReviewStoryboards(originalIds, userId);
+        List<AidStoryboard> suggestions = loadReviewStoryboards(suggestionIds, userId);
+        int max = Math.max(originals.size(), suggestions.size());
+        List<StoryboardScriptReviewVO.Item> originalItems = new ArrayList<>(originals.size());
+        List<StoryboardScriptReviewVO.Item> suggestionItems = new ArrayList<>(suggestions.size());
+        for (int i = 0; i < max; i++)
+        {
+            AidStoryboard original = i < originals.size() ? originals.get(i) : null;
+            AidStoryboard suggestion = i < suggestions.size() ? suggestions.get(i) : null;
+            String reason = StoryboardScriptReviewDiff.explain(original, suggestion);
+            if (original != null)
+            {
+                originalItems.add(toReviewItem(original, reason));
+            }
+            if (suggestion != null)
+            {
+                suggestionItems.add(toReviewItem(suggestion, reason));
+            }
+        }
+        return StoryboardScriptReviewVO.builder()
+                .taskId(taskId)
+                .status(task.getStatus())
+                .applied(snapshot.path(REVIEW_APPLIED).asBoolean(false))
+                .originals(originalItems)
+                .suggestions(suggestionItems)
+                .build();
+    }
+
+    @Override
+    public void applyStoryboardScriptReview(StoryboardScriptReviewRequest request, Long userId)
+    {
+        AidExtractTask task = requireReviewTask(request.getTaskId(), userId);
+        if (Set.of(TASK_STATUS_PENDING, TASK_STATUS_PROCESSING, TASK_STATUS_FINALIZING)
+                .contains(task.getStatus()))
+        {
+            throw new ServiceException("分镜仍在生成，请完成后再审核");
+        }
+        JsonNode snapshot = readTaskSnapshot(task);
+        List<Long> originalIds = readLongIds(snapshot.path(REVIEW_SOURCE_STORYBOARD_IDS));
+        List<Long> suggestionIds = loadReviewSuggestionIds(task.getId());
+        if (CollectionUtil.isEmpty(originalIds))
+        {
+            throw new ServiceException("本次任务没有可对照的原分镜");
+        }
+        Set<Long> originalSet = new HashSet<>(originalIds);
+        Set<Long> suggestionSet = new HashSet<>(suggestionIds);
+        Set<Long> allowedIds = new HashSet<>(originalSet);
+        allowedIds.addAll(suggestionSet);
+        Set<Long> selectedIds = new LinkedHashSet<>();
+        for (StoryboardScriptReviewRequest.Item item : request.getItems())
+        {
+            String decision = StrUtil.upperFirst(StrUtil.trimToEmpty(item.getDecision()).toLowerCase());
+            Long storyboardId = item.getStoryboardId();
+            if (!allowedIds.contains(storyboardId) || !selectedIds.add(storyboardId))
+            {
+                throw new ServiceException("审核分镜无效或重复");
+            }
+            if ("Original".equals(decision) && !originalSet.contains(storyboardId))
+            {
+                throw new ServiceException("原分镜选择无效");
+            }
+            if ("Suggestion".equals(decision) && !suggestionSet.contains(storyboardId))
+            {
+                throw new ServiceException("AI 建议选择无效");
+            }
+            if (!Set.of("Original", "Suggestion", "Manual").contains(decision))
+            {
+                throw new ServiceException("审核决定无效");
+            }
+        }
+
+        List<AidStoryboard> sourceRows = loadReviewStoryboards(new ArrayList<>(allowedIds), userId);
+        long startSort = sourceRows.stream()
+                .filter(row -> originalSet.contains(row.getId()))
+                .map(AidStoryboard::getSortOrder)
+                .filter(Objects::nonNull)
+                .min(Long::compareTo)
+                .orElse(1L);
+        transactionTemplate.executeWithoutResult(status -> {
+            LambdaUpdateWrapper<AidStoryboard> archive = Wrappers.lambdaUpdate();
+            archive.in(AidStoryboard::getId, allowedIds)
+                    .eq(AidStoryboard::getUserId, userId)
+                    .eq(AidStoryboard::getProjectId, task.getProjectId())
+                    .eq(AidStoryboard::getEpisodeId, task.getEpisodeId())
+                    .set(AidStoryboard::getDelFlag, DEL_FLAG_DELETED)
+                    .set(AidStoryboard::getUpdateTime, DateUtils.getNowDate())
+                    .set(AidStoryboard::getUpdateBy, String.valueOf(userId));
+            storyboardService.update(archive);
+
+            long sortOrder = startSort;
+            for (StoryboardScriptReviewRequest.Item item : request.getItems())
+            {
+                String decision = StrUtil.upperFirst(StrUtil.trimToEmpty(item.getDecision()).toLowerCase());
+                LambdaUpdateWrapper<AidStoryboard> select = Wrappers.lambdaUpdate();
+                select.eq(AidStoryboard::getId, item.getStoryboardId())
+                        .eq(AidStoryboard::getUserId, userId)
+                        .eq(AidStoryboard::getProjectId, task.getProjectId())
+                        .eq(AidStoryboard::getEpisodeId, task.getEpisodeId())
+                        .set(AidStoryboard::getDelFlag, DEL_FLAG_NORMAL)
+                        .set(AidStoryboard::getSortOrder, sortOrder++)
+                        .set(AidStoryboard::getUpdateTime, DateUtils.getNowDate())
+                        .set(AidStoryboard::getUpdateBy, String.valueOf(userId));
+                if ("Manual".equals(decision))
+                {
+                    select.set(AidStoryboard::getTitle, StrUtil.trimToEmpty(item.getTitle()))
+                            .set(AidStoryboard::getStoryScript, StrUtil.trimToEmpty(item.getStoryScript()))
+                            .set(AidStoryboard::getDialogueText, StrUtil.trimToEmpty(item.getDialogueText()));
+                }
+                if (!storyboardService.update(select))
+                {
+                    throw new ServiceException("审核结果保存失败，请重试");
+                }
+            }
+
+            try
+            {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> input = OBJECT_MAPPER.readValue(
+                        StrUtil.blankToDefault(task.getInputSnapshot(), "{}"), LinkedHashMap.class);
+                input.put(REVIEW_APPLIED, true);
+                input.put("reviewAppliedAt", DateUtils.getTime());
+                input.put("reviewSelectedStoryboardIds", new ArrayList<>(selectedIds));
+                AidExtractTask update = new AidExtractTask();
+                update.setId(task.getId());
+                update.setInputSnapshot(OBJECT_MAPPER.writeValueAsString(input));
+                update.setUpdateTime(DateUtils.getNowDate());
+                update.setUpdateBy(String.valueOf(userId));
+                if (!extractTaskService.updateById(update))
+                {
+                    throw new ServiceException("审核状态保存失败，请重试");
+                }
+            }
+            catch (ServiceException ex)
+            {
+                throw ex;
+            }
+            catch (Exception ex)
+            {
+                throw new ServiceException("审核状态保存失败，请重试");
+            }
+        });
+    }
+
+    private AidExtractTask requireReviewTask(Long taskId, Long userId)
+    {
+        AidExtractTask task = extractTaskService.selectAidExtractTaskById(taskId);
+        if (task == null || !Objects.equals(task.getUserId(), userId)
+                || !TASK_TYPE_STORYBOARD_SCRIPT_BATCH.equals(task.getTaskType())
+                || !DEL_FLAG_NORMAL.equals(task.getDelFlag()))
+        {
+            throw new ServiceException("分镜生成任务不存在");
+        }
+        return task;
+    }
+
+    private JsonNode readTaskSnapshot(AidExtractTask task)
+    {
+        try
+        {
+            return OBJECT_MAPPER.readTree(StrUtil.blankToDefault(task.getInputSnapshot(), "{}"));
+        }
+        catch (Exception ex)
+        {
+            throw new ServiceException("分镜审核数据损坏，请重新生成");
+        }
+    }
+
+    private List<Long> readLongIds(JsonNode node)
+    {
+        if (node == null || !node.isArray())
+        {
+            return List.of();
+        }
+        List<Long> ids = new ArrayList<>();
+        node.forEach(item -> {
+            if (item.canConvertToLong() && item.longValue() > 0)
+            {
+                ids.add(item.longValue());
+            }
+        });
+        return ids.stream().distinct().toList();
+    }
+
+    private List<Long> loadReviewSuggestionIds(Long taskId)
+    {
+        List<Long> batchIds = storyboardBatchService.list(
+                Wrappers.<AidStoryboardBatch>lambdaQuery()
+                        .select(AidStoryboardBatch::getId)
+                        .eq(AidStoryboardBatch::getParentTaskId, taskId))
+                .stream().map(AidStoryboardBatch::getId).filter(Objects::nonNull).toList();
+        if (CollectionUtil.isEmpty(batchIds))
+        {
+            return List.of();
+        }
+        return storyboardService.list(Wrappers.<AidStoryboard>lambdaQuery()
+                        .select(AidStoryboard::getId, AidStoryboard::getSortOrder)
+                        .in(AidStoryboard::getBatchId, batchIds)
+                        .orderByAsc(AidStoryboard::getSortOrder)
+                        .orderByAsc(AidStoryboard::getId))
+                .stream().map(AidStoryboard::getId).filter(Objects::nonNull).distinct().toList();
+    }
+
+    private List<AidStoryboard> loadReviewStoryboards(List<Long> ids, Long userId)
+    {
+        if (CollectionUtil.isEmpty(ids))
+        {
+            return List.of();
+        }
+        Map<Long, Integer> order = new HashMap<>();
+        for (int i = 0; i < ids.size(); i++)
+        {
+            order.putIfAbsent(ids.get(i), i);
+        }
+        List<AidStoryboard> rows = storyboardService.list(Wrappers.<AidStoryboard>lambdaQuery()
+                .select(AidStoryboard::getId, AidStoryboard::getSortOrder, AidStoryboard::getTitle,
+                        AidStoryboard::getStoryScript, AidStoryboard::getDialogueText)
+                .in(AidStoryboard::getId, ids)
+                .eq(AidStoryboard::getUserId, userId));
+        rows.sort(Comparator.comparingInt(row -> order.getOrDefault(row.getId(), Integer.MAX_VALUE)));
+        return rows;
+    }
+
+    private StoryboardScriptReviewVO.Item toReviewItem(AidStoryboard row, String reason)
+    {
+        return StoryboardScriptReviewVO.Item.builder()
+                .storyboardId(row.getId())
+                .sortOrder(row.getSortOrder())
+                .title(row.getTitle())
+                .storyScript(row.getStoryScript())
+                .dialogueText(row.getDialogueText())
+                .reason(reason)
+                .build();
     }
 
     private String buildBatchResultJson(int total, int successCount, int failCount,

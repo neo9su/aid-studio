@@ -30,7 +30,6 @@ import com.aid.aid.domain.AidComicProject;
 import com.aid.aid.domain.AidExtractTask;
 import com.aid.aid.domain.AidRolePropScene;
 import com.aid.aid.domain.AidRolePropSceneForm;
-import com.aid.aid.domain.AidRolePropSceneFormImage;
 import com.aid.aid.domain.AidStoryboard;
 import com.aid.aid.domain.media.AidMediaTask;
 import com.aid.aid.mapper.AidMediaTaskMapper;
@@ -38,7 +37,6 @@ import com.aid.aid.service.IAidComicProjectService;
 import com.aid.aid.service.IAidComicEpisodeService;
 import com.aid.aid.service.IAidExtractTaskService;
 import com.aid.aid.service.IAidRolePropSceneFormService;
-import com.aid.aid.service.IAidRolePropSceneFormImageService;
 import com.aid.aid.service.IAidRolePropSceneService;
 import com.aid.aid.service.IAidStoryboardService;
 import com.aid.agent.IAidAgentService;
@@ -93,6 +91,11 @@ import com.aid.storyboard.dto.StoryboardVideoGenerateRequest;
 import com.aid.storyboard.dto.StoryboardVideoGridGenerateRequest;
 import com.aid.storyboard.service.impl.StoryboardStepChainService;
 import com.aid.storyboard.service.IStoryboardVideoGenerationService;
+import com.aid.storyboard.support.StoryboardReadableScriptParser;
+import com.aid.skill.domain.AidSkill;
+import com.aid.skill.domain.AidSkillVersion;
+import com.aid.skill.mapper.AidSkillMapper;
+import com.aid.skill.mapper.AidSkillVersionMapper;
 
 import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.convert.Convert;
@@ -317,6 +320,10 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
 
     @Autowired
     private StoryboardStepChainService storyboardStepChainService;
+    @Autowired
+    private AidSkillMapper skillMapper;
+    @Autowired
+    private AidSkillVersionMapper skillVersionMapper;
 
     @Autowired
     private IStoryboardVideoGenerationService storyboardVideoGenerationService;
@@ -337,7 +344,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
     private IAidRolePropSceneFormService rolePropSceneFormService;
 
     @Autowired
-    private IAidRolePropSceneFormImageService rolePropSceneFormImageService;
+    private StoryboardImageReferenceResolver storyboardImageReferenceResolver;
 
     /** 角色级音频引用统一解析器：按台词补齐占位并兼容历史形态级名称。 */
     @Autowired
@@ -462,12 +469,13 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                                                        String agentCode, String modelCode,
                                                        Boolean overwrite, String continuityMode,
                                                        Long previousStoryboardId,
-                                                       Map<String, Object> chainNext)
+                                                       Map<String, Object> chainNext,
+                                                       Boolean previewOnly)
     {
         // 多参方向：回填 aid_storyboard.video_prompt
         return batchGenerateInternal(DIRECTION_MULTI, projectId, episodeId, userId,
                 storyboardIds, agentCode, modelCode, overwrite,
-                continuityMode, previousStoryboardId, chainNext);
+                continuityMode, previousStoryboardId, chainNext, previewOnly);
     }
 
     @Override
@@ -480,7 +488,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         // 图生方向（漫剧版）：回填 aid_storyboard.video_prompt_image，与多参物理隔离
         return batchGenerateInternal(DIRECTION_IMAGE, projectId, episodeId, userId,
                 storyboardIds, agentCode, modelCode, overwrite,
-                continuityMode, previousStoryboardId, null);
+                continuityMode, previousStoryboardId, null, false);
     }
 
     @Override
@@ -494,7 +502,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         // 复用图生列 video_prompt_image 回填（不新增列），与图生/多参共用任务/计费/锁/队列骨架。
         return batchGenerateInternal(DIRECTION_GRID, projectId, episodeId, userId,
                 storyboardIds, agentCode, modelCode, overwrite,
-                continuityMode, previousStoryboardId, null);
+                continuityMode, previousStoryboardId, null, false);
     }
 
     @Override
@@ -664,19 +672,21 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         AutoVideoRoute route = resolveAutoVideoRoute(creationMode);
         String direction = route.direction();
         String chainType = route.chainType();
+        String videoModelName = StrUtil.trim(request.getGenModelName());
         Map<String, Object> chainNext = new LinkedHashMap<>();
         chainNext.put("type", chainType);                                  // 出片链路类型
-        chainNext.put("modelName", request.getGenModelName());             // 出片模型（可选）
+        chainNext.put("modelName", videoModelName);                         // 出片模型（可选）
         chainNext.put("aspectRatio", request.getGenAspectRatio());         // 出片宽高比（可选）
         chainNext.put("resolution", request.getGenResolution());           // 出片清晰度档位（可选）
         chainNext.put("durationSeconds", request.getGenDurationSeconds()); // 出片时长秒（可选）
-        chainNext.put("generateAudio", request.getGenGenerateAudio());     // 是否出音频（可选）
+        chainNext.put("generateAudio", resolveChainedGenerateAudio(
+                videoModelName, request.getGenGenerateAudio()));            // 是否出音频（可选）
         log.info("统一视频合一路由: userId={}, projectId={}, episodeId={}, creationMode={}, direction={}, chainType={}",
                 userId, request.getProjectId(), request.getEpisodeId(), creationMode, direction, chainType);
         return batchGenerateInternal(direction, request.getProjectId(), request.getEpisodeId(), userId,
                 request.getStoryboardIds(), request.getAgentCode(), request.getModelCode(),
                 request.getOverwrite(), request.getContinuityMode(),
-                request.getPreviousStoryboardId(), chainNext);
+                request.getPreviousStoryboardId(), chainNext, false);
     }
 
     private AutoVideoRoute resolveAutoVideoRoute(String creationMode)
@@ -723,6 +733,40 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
     }
 
     /**
+     * 从 aid_skill 表加载 Prompt Skill 的 system_prompt（轻量路径，不创建 aid_skill_run）。
+     * 用于 per-model 视频提示词生成（如 Agnes 2.5 英文自然语言输出）。
+     */
+    private String loadSkillSystemPrompt(String skillCode)
+    {
+        AidSkill skill = skillMapper.selectOne(Wrappers.<AidSkill>lambdaQuery()
+                .select(AidSkill::getId, AidSkill::getCurrentVersionId,
+                        AidSkill::getStatus, AidSkill::getDelFlag)
+                .eq(AidSkill::getSkillCode, skillCode)
+                .last("limit 1"));
+        if (skill == null)
+        {
+            throw new ServiceException("Prompt Skill 不存在: " + skillCode);
+        }
+        if (!"0".equals(skill.getDelFlag()) || !"0".equals(skill.getStatus()))
+        {
+            throw new ServiceException("Prompt Skill 已停用: " + skillCode);
+        }
+        if (skill.getCurrentVersionId() == null)
+        {
+            throw new ServiceException("Prompt Skill 无激活版本: " + skillCode);
+        }
+        AidSkillVersion version = skillVersionMapper.selectOne(Wrappers.<AidSkillVersion>lambdaQuery()
+                .select(AidSkillVersion::getSystemPrompt)
+                .eq(AidSkillVersion::getId, skill.getCurrentVersionId())
+                .last("limit 1"));
+        if (version == null || StrUtil.isBlank(version.getSystemPrompt()))
+        {
+            throw new ServiceException("Prompt Skill 版本提示词为空: " + skillCode);
+        }
+        return version.getSystemPrompt();
+    }
+
+    /**
      * 批量生成视频提示词内部实现：多参 / 图生 / 宫格三方向共用同一套任务/计费/锁/队列骨架，
      * 仅以 {@code direction} 区分 业务分类 / 默认智能体 / 回填列 / 输入装配 / "已生成"判定列。
      */
@@ -731,7 +775,8 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                                                      String agentCode, String modelCode,
                                                      Boolean overwrite, String continuityMode,
                                                      Long previousStoryboardId,
-                                                     Map<String, Object> chainNext)
+                                                     Map<String, Object> chainNext,
+                                                     Boolean previewOnly)
     {
         VideoPromptBillingPlan plan = prepareVideoPromptBillingPlan(direction, projectId, episodeId, userId,
                 storyboardIds, agentCode, modelCode, overwrite, continuityMode, previousStoryboardId);
@@ -796,6 +841,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
             inputMap.put("agentCode", agentCode);
             inputMap.put("modelCode", resolvedModelCode);
             inputMap.put("overwrite", overwriteFlag);
+            inputMap.put("previewOnly", Boolean.TRUE.equals(previewOnly));
             inputMap.put("projectLockToken", lockResult.getToken());
             inputMap.put("storyboardIds", targetList.stream().map(AidStoryboard::getId).collect(Collectors.toList()));
             if (continuityContext.enabled())
@@ -1025,7 +1071,8 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
     }
 
     private record VideoPromptResumePlan(AidExtractTask task, Map<String, Object> input,
-            String direction, VideoPromptBillingPlan billingPlan, String billingSnapshotJson)
+            String direction, VideoPromptBillingPlan billingPlan, String billingSnapshotJson,
+            boolean chainOnly)
     {
     }
 
@@ -1033,7 +1080,84 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
     public BillingQuoteVO quoteResumeVideoPrompt(Long taskId, Long userId)
     {
         VideoPromptResumePlan plan = prepareVideoPromptResumePlan(taskId, userId);
+        if (plan.chainOnly())
+        {
+            BillingQuoteVO mediaQuote = quoteChainOnlyVideo(plan.input(), plan.direction(), userId);
+            return billingQuoteAssembler.aggregate("TASK_RESUME", List.of(mediaQuote));
+        }
         return assembleVideoPromptQuote("TASK_RESUME", plan.billingPlan());
+    }
+
+    @SuppressWarnings("unchecked")
+    private BillingQuoteVO quoteChainOnlyVideo(Map<String, Object> input, String direction, Long userId)
+    {
+        Object rawChainNext = input.get("chainNext");
+        if (!(rawChainNext instanceof Map<?, ?> chainNext))
+        {
+            throw new ServiceException("任务数据异常");
+        }
+        Object rawIds = input.get("storyboardIds");
+        List<Long> targetIds = rawIds instanceof List<?> list
+                ? list.stream().map(Convert::toLong).filter(Objects::nonNull).distinct().toList()
+                : List.of();
+        if (targetIds.isEmpty())
+        {
+            throw new ServiceException("分镜不能为空");
+        }
+        AutoVideoRoute route = new AutoVideoRoute(direction, Convert.toStr(chainNext.get("type"), CHAIN_TYPE_VIDEO));
+        StoryboardVideoWithPromptRequest source = new StoryboardVideoWithPromptRequest();
+        String videoModelName = Convert.toStr(chainNext.get("modelName"), null);
+        source.setGenModelName(videoModelName);
+        source.setGenAspectRatio(Convert.toStr(chainNext.get("aspectRatio"), null));
+        source.setGenResolution(Convert.toStr(chainNext.get("resolution"), null));
+        source.setGenDurationSeconds(Convert.toInt(chainNext.get("durationSeconds"), null));
+        source.setGenGenerateAudio(resolveChainedGenerateAudio(videoModelName,
+                Convert.toBool(chainNext.get("generateAudio"), null)));
+        return quoteCurrentVideoBatches(route, source, targetIds, userId);
+    }
+
+    /**
+     * 未明确指定出片模型时，音频开关必须交由最终命中的默认模型按 capability 决定。
+     * 否则前端遗留的“带音频”偏好会与不支持音频的默认模型组合，导致提示词完成后链路失败。
+     */
+    static Boolean resolveChainedGenerateAudio(String modelName, Boolean generateAudio)
+    {
+        return StrUtil.isBlank(modelName) ? null : generateAudio;
+    }
+
+    private BillingQuoteVO quoteCurrentVideoBatches(AutoVideoRoute route,
+            StoryboardVideoWithPromptRequest source, List<Long> targetIds, Long userId)
+    {
+        List<BillingQuoteVO> quotes = new ArrayList<>();
+        for (int start = 0; start < targetIds.size(); start += CHAIN_CHILD_BATCH_SIZE)
+        {
+            List<Long> ids = new ArrayList<>(targetIds.subList(
+                    start, Math.min(start + CHAIN_CHILD_BATCH_SIZE, targetIds.size())));
+            if (DIRECTION_IMAGE.equals(route.direction()))
+            {
+                StoryboardVideoFromImageGenerateRequest request = new StoryboardVideoFromImageGenerateRequest();
+                copyPlannedVideoOptions(source, request, ids);
+                quotes.add(storyboardVideoGenerationService.quoteVideoFromImage(request, userId));
+            }
+            else if (DIRECTION_GRID.equals(route.direction()))
+            {
+                StoryboardVideoGridGenerateRequest request = new StoryboardVideoGridGenerateRequest();
+                copyPlannedVideoOptions(source, request, ids);
+                quotes.add(storyboardVideoGenerationService.quoteVideoFromGrid(request, userId));
+            }
+            else
+            {
+                StoryboardVideoGenerateRequest request = new StoryboardVideoGenerateRequest();
+                request.setStoryboardIds(ids);
+                request.setModelName(source.getGenModelName());
+                request.setAspectRatio(source.getGenAspectRatio());
+                request.setResolution(source.getGenResolution());
+                request.setDurationSeconds(source.getGenDurationSeconds());
+                request.setGenerateAudio(source.getGenGenerateAudio());
+                quotes.add(storyboardVideoGenerationService.quoteVideo(request, userId));
+            }
+        }
+        return billingQuoteAssembler.aggregate(quoteTypeForMediaRoute(route), quotes);
     }
 
     @SuppressWarnings("unchecked")
@@ -1076,6 +1200,11 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                 .toList();
         if (remainingIds.isEmpty())
         {
+            if (isChainRetryOnly(task))
+            {
+                return new VideoPromptResumePlan(task, new LinkedHashMap<>(input), direction,
+                        null, null, true);
+            }
             throw new ServiceException("无可续生镜头");
         }
         boolean gridDirection = DIRECTION_GRID.equals(direction);
@@ -1101,7 +1230,14 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
             billingSnapshotJson = JSONUtil.toJsonStr(result.getSnapshot());
         }
         return new VideoPromptResumePlan(task, new LinkedHashMap<>(input), direction,
-                billingPlan, billingSnapshotJson);
+                billingPlan, billingSnapshotJson, false);
+    }
+
+    static boolean isChainRetryOnly(AidExtractTask task)
+    {
+        return task != null && hasChainNext(task.getInputSnapshot())
+                && (!hasChainChildTaskId(task.getResultData())
+                    || isChainFailedResult(task.getResultData()));
     }
 
     private AidExtractTask requireVideoPromptResumeTask(Long taskId, Long userId)
@@ -1247,6 +1383,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         String agentCode = StrUtil.blankToDefault(String.valueOf(input.getOrDefault("agentCode", defaultAgent)), defaultAgent);
         String modelCode = String.valueOf(input.getOrDefault("modelCode", task.getModelCode()));
         boolean overwriteFlag = Boolean.TRUE.equals(input.get("overwrite"));
+        boolean previewOnly = Boolean.TRUE.equals(input.get("previewOnly"));
         String continuityMode = Convert.toStr(input.get("continuityMode"), null);
         String projectLockToken = StrUtil.trim(String.valueOf(
                 input.getOrDefault("projectLockToken", "")));
@@ -1257,8 +1394,16 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                 : rawIds.stream().map(Convert::toLong).filter(Objects::nonNull).distinct().collect(Collectors.toList());
         if (CollectionUtil.isEmpty(storyboardIds)) { throw new ServiceException("分镜不能为空"); }
 
-        // 加载智能体提示词模板：复用统一的「文件优先 → 回源 aid_agent → 回写文件」机制，与角色/场景/道具提取一致
-        String systemPrompt = helper.loadPromptByName(agentCode);
+        // 加载提示词：优先使用 promptSkillCode（aid_skill 表的 per-model Prompt Skill），否则回退到 aid_agent
+        String promptSkillCode = StrUtil.trim(String.valueOf(input.getOrDefault("promptSkillCode", "")));
+        String systemPrompt;
+        if (StrUtil.isNotBlank(promptSkillCode)) {
+            systemPrompt = loadSkillSystemPrompt(promptSkillCode);
+            log.info("使用 Prompt Skill 生成视频提示词: skillCode={}, agentCode={}", promptSkillCode, agentCode);
+        } else {
+            // 复用统一的「文件优先 → 回源 aid_agent → 回写文件」机制
+            systemPrompt = helper.loadPromptByName(agentCode);
+        }
 
         // 加载分镜
         List<AidStoryboard> storyboardList = storyboardService.list(
@@ -1266,6 +1411,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                         .select(AidStoryboard::getId, AidStoryboard::getProjectId, AidStoryboard::getEpisodeId,
                                 AidStoryboard::getSourceSceneId, AidStoryboard::getUserId,
                                 AidStoryboard::getSortOrder,
+                                AidStoryboard::getStoryScript, AidStoryboard::getDialogueText,
                                 AidStoryboard::getScriptParams, AidStoryboard::getImagePrompt,
                                 AidStoryboard::getVideoPrompt, AidStoryboard::getVideoPromptImage,
                                 AidStoryboard::getDelFlag)
@@ -1439,7 +1585,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                     continue;
                 }
                 prompt = sanitizeVideoPromptReferences(prompt, referenceAssetNames, taskId, sb.getId());
-                Map<String, Object> shotParams = parseScriptParams(sb.getScriptParams());
+                Map<String, Object> shotParams = resolveScriptParams(sb);
                 String dialogueText = Convert.toStr(shotParams.get("台词"), "");
                 // 服务端校验音频编号与角色绑定；合法输出原样保留，异常占位按实际发言顺序原位修复。
                 prompt = roleAudioReferenceResolver.normalizeGeneratedVideoPrompt(
@@ -1477,7 +1623,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
 
             // 同一条已结算 child 的整批业务交付必须原子落库：崩溃只能发生在
             // 全部提交之前或之后，不能留下部分镜头导致续生的 stable slot 改变。
-            if (!promptWrites.isEmpty())
+            if (!previewOnly && !promptWrites.isEmpty())
             {
                 transactionTemplate.executeWithoutResult(status -> {
                     extractBillingService.assertTextTaskBusinessCommit(
@@ -1513,13 +1659,20 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
             }
             for (VideoPromptWrite write : promptWrites)
             {
-                log.info("视频提示词归位落库: taskId={}, storyboardId={}, 序位={}, shotKey={}, promptLen={}",
+                log.info("视频提示词生成{}: taskId={}, storyboardId={}, 序位={}, shotKey={}, promptLen={}",
+                        previewOnly ? "预览" : "并归位落库",
                         taskId, write.storyboard().getId(), write.index() + 1,
                         StoryboardPromptBatchAligner.buildShotKey(write.storyboard().getId()),
                         StrUtil.length(write.prompt()));
                 successCount++;
-                successItems.add(Map.of("storyboardId", write.storyboard().getId(),
-                        "promptLength", StrUtil.length(write.prompt())));
+                Map<String, Object> successItem = new LinkedHashMap<>();
+                successItem.put("storyboardId", write.storyboard().getId());
+                successItem.put("promptLength", StrUtil.length(write.prompt()));
+                if (previewOnly)
+                {
+                    successItem.put("prompt", write.prompt());
+                }
+                successItems.add(successItem);
             }
             sseManager.sendStepProgress(taskId, "generating", 98, "batch",
                     "批量生成完成", skipCount + successCount + failCount, total);
@@ -1567,6 +1720,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         result.put("successCount", successCount);
         result.put("skipCount", skipCount);
         result.put("failCount", failCount);
+        result.put("previewOnly", previewOnly);
         result.put("successItems", successItems);
         result.put("failedItems", failedItems);
         try { return OBJECT_MAPPER.writeValueAsString(result); }
@@ -1912,7 +2066,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                 .build();
     }
 
-    private boolean hasChainNext(String inputSnapshot)
+    private static boolean hasChainNext(String inputSnapshot)
     {
         if (StrUtil.isBlank(inputSnapshot)) { return false; }
         try
@@ -1927,7 +2081,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         }
     }
 
-    private boolean hasChainChildTaskId(String resultData)
+    private static boolean hasChainChildTaskId(String resultData)
     {
         Map<String, Object> result = parseResultMap(resultData);
         Object listVal = result.get("chainChildTaskIds");
@@ -1948,7 +2102,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         return false;
     }
 
-    private boolean isChainFailedResult(String resultData)
+    private static boolean isChainFailedResult(String resultData)
     {
         Map<String, Object> result = parseResultMap(resultData);
         Object val = result.get("chainFailed");
@@ -1965,7 +2119,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> parseResultMap(String resultData)
+    private static Map<String, Object> parseResultMap(String resultData)
     {
         if (StrUtil.isBlank(resultData)) { return new LinkedHashMap<>(); }
         try
@@ -1979,7 +2133,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         }
     }
 
-    private int numberValue(Object value)
+    private static int numberValue(Object value)
     {
         return value instanceof Number n ? n.intValue() : 0;
     }
@@ -2220,6 +2374,37 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
     }
 
     /**
+     * 结构化参数优先；仅在字段缺失时从人工可读脚本补齐。
+     * 兼容 Markdown 的“提示词/台词/旁白”写法，并同时补齐标准版画面描述与专业版画面说明。
+     */
+    private Map<String, Object> resolveScriptParams(AidStoryboard storyboard)
+    {
+        Map<String, Object> params = parseScriptParams(
+                Objects.isNull(storyboard) ? null : storyboard.getScriptParams());
+        if (Objects.isNull(storyboard)) { return params; }
+        Map<String, String> readable = StoryboardReadableScriptParser.parseFields(storyboard.getStoryScript());
+        readable.forEach((key, value) -> {
+            if (StrUtil.isNotBlank(value) && StrUtil.isBlank(Convert.toStr(params.get(key), "")))
+            {
+                params.put(key, value);
+            }
+        });
+        String picture = StrUtil.blankToDefault(Convert.toStr(params.get("画面描述"), ""),
+                Convert.toStr(params.get("画面说明"), ""));
+        if (StrUtil.isNotBlank(picture))
+        {
+            params.putIfAbsent("画面描述", picture);
+            params.putIfAbsent("画面说明", picture);
+        }
+        if (StrUtil.isBlank(Convert.toStr(params.get("台词"), ""))
+                && StrUtil.isNotBlank(storyboard.getDialogueText()))
+        {
+            params.put("台词", storyboard.getDialogueText());
+        }
+        return params;
+    }
+
+    /**
      * 把视觉导演建议的视频时长（秒）合并进 {@code script_params}（key=「视频时长建议秒」），留给后续「按建议时长出片」消费。
      * 读-改-写：保留原有全部 key，仅追加/覆盖该时长 key。解析或序列化失败返回 {@code null}（调用方降级为不写，
      * 不影响 video_prompt 回填本身）。
@@ -2250,6 +2435,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                         .select(AidStoryboard::getId, AidStoryboard::getProjectId, AidStoryboard::getEpisodeId,
                                 AidStoryboard::getSourceSceneId, AidStoryboard::getUserId,
                                 AidStoryboard::getSortOrder,
+                                AidStoryboard::getStoryScript, AidStoryboard::getDialogueText,
                                 AidStoryboard::getScriptParams, AidStoryboard::getImagePrompt,
                                 AidStoryboard::getVideoPrompt, AidStoryboard::getVideoPromptImage,
                                 AidStoryboard::getDelFlag)
@@ -2277,6 +2463,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
                         .select(AidStoryboard::getId, AidStoryboard::getProjectId, AidStoryboard::getEpisodeId,
                                 AidStoryboard::getSourceSceneId, AidStoryboard::getUserId,
                                 AidStoryboard::getSortOrder,
+                                AidStoryboard::getStoryScript, AidStoryboard::getDialogueText,
                                 AidStoryboard::getScriptParams, AidStoryboard::getImagePrompt,
                                 AidStoryboard::getVideoPrompt, AidStoryboard::getVideoPromptImage,
                                 AidStoryboard::getDelFlag)
@@ -2347,7 +2534,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
      */
     private void validateShotForVideoPrompt(AidStoryboard sb, boolean needImagePrompt, boolean groupStructure)
     {
-        Map<String, Object> shot = parseScriptParams(sb.getScriptParams());
+        Map<String, Object> shot = resolveScriptParams(sb);
         if (shot.isEmpty())
         {
             log.info("视频提示词拒绝：分镜脚本未生成, storyboardId={}", sb.getId());
@@ -2472,13 +2659,14 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         out.append("【分镜脚本表】\n");
             for (AidStoryboard sb : shots)
             {
-                Map<String, Object> shot = parseScriptParams(sb.getScriptParams());
+                Map<String, Object> shot = resolveScriptParams(sb);
                 StoryboardSceneContext sceneContext = sceneContexts.get(sb.getId());
                 storyboardSceneContextAssembler.applyReferenceInfo(shot, sceneContext);
                 sanitizeReferenceInfoInPlace(shot, referenceAssetNames, referenceAudioNames, sb.getId());
                 out.append("--- ").append(UNIT_LABEL_SHOT).append(' ')
                         .append(StoryboardPromptBatchAligner.buildShotKey(sb.getId())).append(" ---\n");
                 appendSceneContext(out, sceneContext);
+            appendOriginalStoryboardContext(out, sb);
             appendShotField(out, shot, FIELD_BIZ_NO_SHOT);
             appendShotField(out, shot, "剧本内容");
             appendShotField(out, shot, "画面描述");
@@ -2518,25 +2706,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         {
             return new ArrayList<>();
         }
-        List<AidRolePropSceneFormImage> images = rolePropSceneFormImageService.list(
-                Wrappers.<AidRolePropSceneFormImage>lambdaQuery()
-                        .select(AidRolePropSceneFormImage::getName, AidRolePropSceneFormImage::getImageUrl,
-                                AidRolePropSceneFormImage::getSortOrder)
-                        .eq(AidRolePropSceneFormImage::getProjectId, projectId)
-                        .eq(AidRolePropSceneFormImage::getUserId, userId)
-                        .eq(AidRolePropSceneFormImage::getIsUse, 1)
-                        .eq(AidRolePropSceneFormImage::getIsSplitSource, 0)
-                        .eq(AidRolePropSceneFormImage::getDelFlag, DEL_FLAG_NORMAL)
-                        .orderByAsc(AidRolePropSceneFormImage::getSortOrder));
-        if (CollectionUtil.isEmpty(images))
-        {
-            return new ArrayList<>();
-        }
-        return images.stream()
-                .filter(image -> StrUtil.isNotBlank(image.getName()) && StrUtil.isNotBlank(image.getImageUrl()))
-                .map(image -> StrUtil.trim(image.getName()))
-                .distinct()
-                .collect(Collectors.toList());
+        return storyboardImageReferenceResolver.loadReferenceableNames(projectId, userId);
     }
 
     /**
@@ -2683,13 +2853,14 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         out.append("【分镜脚本表（镜头组）】\n");
         for (AidStoryboard sb : shots)
         {
-            Map<String, Object> group = parseScriptParams(sb.getScriptParams());
+            Map<String, Object> group = resolveScriptParams(sb);
             StoryboardSceneContext sceneContext = sceneContexts.get(sb.getId());
             storyboardSceneContextAssembler.applyReferenceInfo(group, sceneContext);
             sanitizeReferenceInfoInPlace(group, referenceAssetNames, referenceAudioNames, sb.getId());
             out.append("--- ").append(UNIT_LABEL_GROUP).append(' ')
                     .append(StoryboardPromptBatchAligner.buildShotKey(sb.getId())).append(" ---\n");
             appendSceneContext(out, sceneContext);
+            appendOriginalStoryboardContext(out, sb);
             appendShotField(out, group, FIELD_BIZ_NO_GROUP);
             appendShotField(out, group, "剧本内容");
             appendShotField(out, group, "画面说明");
@@ -2700,6 +2871,8 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
             appendShotField(out, group, "运镜等级");
             appendShotField(out, group, "时长估算");
             appendShotField(out, group, "镜头脚本");
+            appendShotField(out, group, "音效");
+            appendShotField(out, group, "备注");
             if (includeImagePrompt)
             {
                 // 宫格图提示词（宫格画师产出的多宫格图 prompt），宫格视觉导演据此对齐"参考分镜图N"
@@ -2708,6 +2881,20 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
             out.append('\n');
         }
         return out.toString();
+    }
+
+    /**
+     * 保留用户录入的完整分镜上下文。结构化字段可能因历史解析不完整而缺少备注/音效，
+     * 因此原始 story_script、dialogue_text 与 script_params JSON 必须一并交给视觉导演。
+     */
+    private void appendOriginalStoryboardContext(StringBuilder out, AidStoryboard storyboard)
+    {
+        out.append("完整原始分镜剧本：")
+                .append(StrUtil.nullToEmpty(storyboard.getStoryScript())).append('\n');
+        out.append("原始台词文本：")
+                .append(StrUtil.nullToEmpty(storyboard.getDialogueText())).append('\n');
+        out.append("原始结构化参数(JSON)：")
+                .append(StrUtil.nullToEmpty(storyboard.getScriptParams())).append('\n');
     }
 
     /** 按条目单位取业务编号字段名：镜头单位取镜号，镜头组单位取镜头组。 */
@@ -2756,7 +2943,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         String bizNoField = bizNoFieldOf(unitLabel);
         List<StoryboardPromptBatchAligner.Target> targets = shots.stream()
                 .map(shot -> new StoryboardPromptBatchAligner.Target(
-                        shot.getId(), Convert.toStr(parseScriptParams(shot.getScriptParams()).get(bizNoField), "")))
+                        shot.getId(), Convert.toStr(resolveScriptParams(shot).get(bizNoField), "")))
                 .collect(Collectors.toList());
         return StoryboardPromptBatchAligner.align(elems, targets, bizNoField);
     }
@@ -2785,7 +2972,7 @@ public class StoryboardVideoPromptServiceImpl implements IStoryboardVideoPromptS
         out.append("【分镜脚本表】\n");
         for (AidStoryboard sb : shots)
         {
-            Map<String, Object> shot = parseScriptParams(sb.getScriptParams());
+            Map<String, Object> shot = resolveScriptParams(sb);
             StoryboardSceneContext sceneContext = sceneContexts.get(sb.getId());
             storyboardSceneContextAssembler.applyReferenceInfo(shot, sceneContext);
             sanitizeReferenceInfoInPlace(shot, referenceAssetNames, referenceAudioNames, sb.getId());

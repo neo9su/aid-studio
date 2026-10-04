@@ -1095,8 +1095,10 @@ CREATE TABLE `aid_comic_project`  (
   `project_name` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '项目名称',
   `pending_project_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '待审核项目名称',
   `project_desc` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '项目描述',
+  `project_outline` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '项目总纲/资产圣经（独立于分集剧本）',
   `pending_project_desc` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '待审核项目描述',
   `project_type` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '类型: series剧集, movie电影',
+  `compliance_profile` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'PRIVATE_ADULT' COMMENT '内容与发布合规模式：PRIVATE_ADULT/CN_MAINLAND/US_PLATFORMS',
   `cover_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '封面图',
   `pending_cover_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '待审核项目封面',
   `aspect_ratio` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '画面比例(16:9, 9:16等)',
@@ -5755,7 +5757,7 @@ INSERT INTO `aid_ai_model` (
 (@agnes25_provider_id,'agnes-video-2.5-flash','agnes-video-2.5-flash','Agnes Video 2.5 Flash','video','image_to_video',0,1,
  '/v1/videos','agnes-video',130,'1','0',NOW(),'system',NOW(),'system',
  'Agnes Video 2.5 Flash；720P、4-12秒、参考图最多5张、禁止参考视频；当前限时免费；默认停用',
- 'SKU',@agnes25_flash_billing_rule,7,'{"maxConcurrency":1}',1,0,1,1,1,1,1,1,1,1,1,'720P','16:9',5,
+ 'SKU',@agnes25_flash_billing_rule,7,'{"maxConcurrency":4}',1,0,1,1,1,1,1,1,1,1,1,'720P','16:9',5,
  @agnes25_flash_capability,1,'https://wiki.agnes-ai.cn',1)
 ON DUPLICATE KEY UPDATE
   `provider_id`=VALUES(`provider_id`),`real_model_code`=VALUES(`real_model_code`),`model_name`=VALUES(`model_name`),
@@ -6992,6 +6994,16 @@ INSERT INTO aid_ai_model_alias (legacy_model_id, legacy_model_code, model_id, ca
 INSERT INTO aid_ai_model_alias (legacy_model_id, legacy_model_code, model_id, capability_code, binding_code, create_time, create_by) SELECT 111, 'minimax-h3-i2v-last', 109, 'last_frame_to_video', 'model_111_18178879291181c8', NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_model_alias WHERE legacy_model_id=111);
 INSERT INTO aid_ai_model_alias (legacy_model_id, legacy_model_code, model_id, capability_code, binding_code, create_time, create_by) SELECT 112, 'minimax-h3-i2v-first-last', 109, 'start_end_to_video', 'model_112_d264b94750cc6842', NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_model_alias WHERE legacy_model_id=112);
 INSERT INTO aid_ai_model_alias (legacy_model_id, legacy_model_code, model_id, capability_code, binding_code, create_time, create_by) SELECT 113, 'minimax-h3-reference', 109, 'reference_to_video', 'model_113_b52687ec85201b97', NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_model_alias WHERE legacy_model_id=113);
+
+-- 本地 H3 工作流已接入音频 VAE：新安装与重复初始化均声明音画同出能力。
+UPDATE aid_ai_model
+SET capability_json=JSON_SET(capability_json, '$.supportsAudio', TRUE, '$.defaultAudio', TRUE)
+WHERE model_code LIKE 'minimax-h3-%' AND JSON_VALID(capability_json);
+UPDATE aid_ai_model_protocol_binding b
+JOIN aid_ai_model m ON m.id=b.model_id
+SET b.definition_json=JSON_SET(b.definition_json,
+    '$.capability.supportsAudio', TRUE, '$.capability.defaultAudio', TRUE)
+WHERE m.model_code LIKE 'minimax-h3-%' AND JSON_VALID(b.definition_json);
 INSERT INTO aid_ai_model_alias (legacy_model_id, legacy_model_code, model_id, capability_code, binding_code, create_time, create_by) SELECT 114, 'wan3.0-video-prime', 114, 'image_to_video', 'route_114', NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_model_alias WHERE legacy_model_id=114);
 INSERT INTO aid_ai_model_alias (legacy_model_id, legacy_model_code, model_id, capability_code, binding_code, create_time, create_by) SELECT 115, 'wan3.0-video', 115, 'image_to_video', 'route_115', NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_model_alias WHERE legacy_model_id=115);
 INSERT INTO aid_ai_model_alias (legacy_model_id, legacy_model_code, model_id, capability_code, binding_code, create_time, create_by) SELECT 116, 'agnes-video-2.5', 116, 'image_to_video', 'route_116', NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_model_alias WHERE legacy_model_id=116);
@@ -7225,14 +7237,16 @@ INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code,
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_character_card_image', 66, 'image_to_image', 1, NULL, 4, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_character_card_image' AND model_id=66 AND capability_code='image_to_image');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_image', 66, 'image_to_image', 1, NULL, 5, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_image' AND model_id=66 AND capability_code='image_to_image');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'image_edit', 66, 'image_to_image', 1, NULL, 6, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='image_edit' AND model_id=66 AND capability_code='image_to_image');
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'image_edit', 66, 'text_to_image', 0, NULL, 7, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='image_edit' AND model_id=66 AND capability_code='text_to_image');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'image_multi_grid', 66, 'image_to_image', 1, NULL, 7, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='image_multi_grid' AND model_id=66 AND capability_code='image_to_image');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'image_multi_view', 67, 'image_to_image', 1, NULL, 0, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='image_multi_view' AND model_id=67 AND capability_code='image_to_image');
-INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_character_image', 67, 'image_to_image', 1, NULL, 1, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_character_image' AND model_id=67 AND capability_code='image_to_image');
-INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_scene_image', 67, 'image_to_image', 1, NULL, 2, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_scene_image' AND model_id=67 AND capability_code='image_to_image');
-INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_prop_image', 67, 'image_to_image', 1, NULL, 3, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_prop_image' AND model_id=67 AND capability_code='image_to_image');
-INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_character_card_image', 67, 'image_to_image', 1, NULL, 4, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_character_card_image' AND model_id=67 AND capability_code='image_to_image');
-INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_image', 67, 'image_to_image', 1, NULL, 5, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_image' AND model_id=67 AND capability_code='image_to_image');
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_character_image', 67, 'text_to_image', 1, NULL, 1, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_character_image' AND model_id=67 AND capability_code='text_to_image');
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_scene_image', 67, 'text_to_image', 1, NULL, 2, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_scene_image' AND model_id=67 AND capability_code='text_to_image');
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_prop_image', 67, 'text_to_image', 1, NULL, 3, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_prop_image' AND model_id=67 AND capability_code='text_to_image');
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_character_card_image', 67, 'text_to_image', 1, NULL, 4, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_character_card_image' AND model_id=67 AND capability_code='text_to_image');
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_image', 67, 'text_to_image', 1, NULL, 5, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_image' AND model_id=67 AND capability_code='text_to_image');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'image_edit', 67, 'image_to_image', 1, NULL, 6, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='image_edit' AND model_id=67 AND capability_code='image_to_image');
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'image_edit', 67, 'text_to_image', 0, NULL, 7, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='image_edit' AND model_id=67 AND capability_code='text_to_image');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'image_multi_grid', 67, 'image_to_image', 1, NULL, 7, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='image_multi_grid' AND model_id=67 AND capability_code='image_to_image');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_video_image', 68, 'image_to_video', 1, NULL, 0, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_video_image' AND model_id=68 AND capability_code='image_to_video');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_video_edge', 68, 'start_end_to_video', 1, NULL, 1, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_video_edge' AND model_id=68 AND capability_code='start_end_to_video');
@@ -7402,6 +7416,28 @@ INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code,
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_video_multi_pro', 117, 'reference_to_video', 1, NULL, 2, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_video_multi_pro' AND model_id=117 AND capability_code='reference_to_video');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_video_edge', 117, 'start_end_to_video', 1, NULL, 3, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_video_edge' AND model_id=117 AND capability_code='start_end_to_video');
 INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by) SELECT 'main_storyboard_video_grid', 117, 'image_to_video', 1, NULL, 4, NOW(), 'installation' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM aid_ai_business_model_binding WHERE func_code='main_storyboard_video_grid' AND model_id=117 AND capability_code='image_to_video');
+
+-- Agnes 多参入口同时支持纯文本与参考素材；缺少该绑定时，无参考图的手动提示词会
+-- 因默认落入 reference_to_video 而被误报“缺少必要输入”。
+INSERT INTO aid_ai_business_model_binding (func_code, model_id, capability_code, default_capability, defaults_json, sort_order, create_time, create_by, update_time, update_by, remark)
+SELECT pool.func_code, model.id, 'text_to_video', 0, NULL, pool.sort_order,
+       NOW(), 'installation', NOW(), 'installation', 'Agnes 多参纯文本生视频能力'
+FROM aid_ai_model model
+JOIN (
+  SELECT 'main_storyboard_video' AS func_code, 3 AS sort_order
+  UNION ALL SELECT 'main_storyboard_video_multi_pro', 5
+) pool
+WHERE model.model_code IN ('agnes-video-2.5','agnes-video-2.5-flash')
+  AND model.del_flag = '0'
+  AND EXISTS (
+    SELECT 1 FROM aid_ai_model_capability capability
+    WHERE capability.model_id = model.id AND capability.capability_code = 'text_to_video'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM aid_ai_business_model_binding binding
+    WHERE binding.func_code = pool.func_code AND binding.model_id = model.id
+      AND binding.capability_code = 'text_to_video'
+  );
 
 -- v2.1.0：TokenDance 已导入模型的能力一致性修复。
 -- MySQL 5.7；先执行 030-model-configuration-version.sql 和 100-model-capability-bindings.sql。

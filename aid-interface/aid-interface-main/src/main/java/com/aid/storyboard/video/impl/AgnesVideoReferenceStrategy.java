@@ -2,9 +2,11 @@ package com.aid.storyboard.video.impl;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.stereotype.Component;
 
@@ -132,29 +134,23 @@ public class AgnesVideoReferenceStrategy extends AbstractVideoReferenceStrategy
     {
         int max = ctx.getMaxReferenceImages();
         List<ResolvedReference> available = validReferences(ctx);
-        int requestedCount = available.size() + (StrUtil.isNotBlank(ctx.getBaseImageUrl()) ? 1 : 0);
+        Set<String> distinctUrls = new LinkedHashSet<>();
+        if (StrUtil.isNotBlank(ctx.getBaseImageUrl()))
+        {
+            distinctUrls.add(ctx.getBaseImageUrl().trim());
+        }
+        for (ResolvedReference reference : available)
+        {
+            distinctUrls.add(reference.getUrl().trim());
+        }
+        int requestedCount = distinctUrls.size();
         if (max >= 0 && requestedCount > max)
         {
             throw new com.aid.common.exception.ServiceException("参考图片数量超限");
         }
-        List<String> urls = new ArrayList<>();
-        if (StrUtil.isNotBlank(ctx.getBaseImageUrl()))
-        {
-            urls.add(ctx.getBaseImageUrl());
-        }
-        int remaining = max < 0 ? -1 : Math.max(0, max - urls.size());
-        List<ResolvedReference> picked = takeRefs(available, remaining);
-        for (ResolvedReference reference : picked)
-        {
-            if (!urls.contains(reference.getUrl()))
-            {
-                urls.add(reference.getUrl());
-            }
-        }
-        if (max >= 0 && urls.size() > max)
-        {
-            throw new com.aid.common.exception.ServiceException("参考图片数量超限");
-        }
+        List<String> urls = new ArrayList<>(distinctUrls);
+        // 上限按不同 URL 校验；同一张图在提示词中多次引用时，保留全部语义引用但只下发一张。
+        List<ResolvedReference> picked = available;
         String prompt = composePrompt(remapPromptForPicked(ctx.getVideoPrompt(), picked),
                 buildReferenceLegend(picked), ctx.getUserInputText());
         return VideoReferencePlan.of(prompt, urls, null);
@@ -163,11 +159,16 @@ public class AgnesVideoReferenceStrategy extends AbstractVideoReferenceStrategy
     private List<ResolvedReference> validReferences(VideoReferenceContext ctx)
     {
         List<ResolvedReference> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
         for (ResolvedReference reference : ctx.getReferences())
         {
             if (reference != null && StrUtil.isNotBlank(reference.getUrl()))
             {
-                result.add(reference);
+                String url = reference.getUrl().trim();
+                if (seen.add(url))
+                {
+                    result.add(reference);
+                }
             }
         }
         return result;

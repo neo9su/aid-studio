@@ -74,8 +74,8 @@ export function createScpDerivedActionOps(ctx: ScpCtx, view: ScpDerivedViewOps) 
     requestAnimationFrame(() => button.blur())
   }
 
-  function handleAutoExtract(scope: TabKey) {
-    if (!view.hasStory()) {
+  function handleAutoExtract(scope: TabKey | 'all') {
+    if (!view.hasStory() && scope !== 'character') {
       message.warning('请先添加剧本故事')
       return
     }

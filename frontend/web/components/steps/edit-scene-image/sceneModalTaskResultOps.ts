@@ -216,7 +216,9 @@ async function applySceneModalSseTaskResult(
   if (taskKind === 'edit-image' || taskKind === 'dialogue') {
     const r = result as Awaited<ReturnType<typeof followEditImageTask>>
     if (r.ok === false) {
-      if (!opts?.silentComplete && isCurrent()) message.error(r.errorMessage || '生图失败')
+      if (!opts?.silentComplete && isCurrent()) {
+        message.error({ content: r.errorMessage || '生图失败', duration: 8 })
+      }
       clearTaskUi()
       return undefined
     }

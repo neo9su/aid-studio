@@ -55,13 +55,20 @@ export function createStoryboardVideoPromptSubmitFields(
     const durationSeconds = passDuration && Number.isInteger(rawDuration) && rawDuration > 0
       ? rawDuration
       : undefined
-    const resolution = formatVideoResolutionForApi(settings.resolution)
+    const hasExplicitModel = Boolean(state.manualVideoModelPick && modelName)
+    const resolution = hasExplicitModel
+      ? formatVideoResolutionForApi(settings.resolution)
+      : undefined
     return {
-      ...(state.manualVideoModelPick && modelName ? { genModelName: modelName } : {}),
+      ...(hasExplicitModel
+        ? {
+            genModelName: modelName,
+            genGenerateAudio: settings.soundEffects === 'with-sound'
+          }
+        : {}),
       ...(settings.aspectRatio ? { genAspectRatio: settings.aspectRatio } : {}),
       ...(durationSeconds ? { genDurationSeconds: durationSeconds } : {}),
-      ...(resolution ? { genResolution: resolution } : {}),
-      genGenerateAudio: settings.soundEffects === 'with-sound'
+      ...(resolution ? { genResolution: resolution } : {})
     }
   }
 

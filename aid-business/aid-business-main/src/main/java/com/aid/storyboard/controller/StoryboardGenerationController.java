@@ -19,6 +19,8 @@ import com.aid.common.utils.SecurityUtils;
 import com.aid.common.vo.BatchOperationResultVO;
 import com.aid.notify.wechat.service.IWechatNotifyService;
 import com.aid.rps.dto.StoryboardScriptBatchRequest;
+import com.aid.rps.dto.StoryboardScriptReviewQueryRequest;
+import com.aid.rps.dto.StoryboardScriptReviewRequest;
 import com.aid.rps.dto.StoryboardImagePromptBatchRequest;
 import com.aid.rps.dto.StoryboardImageWithPromptRequest;
 import com.aid.rps.dto.StoryboardVideoWithPromptRequest;
@@ -365,6 +367,21 @@ public class StoryboardGenerationController extends BaseController {
         return success(vo);
     }
 
+    /** 查询自动分镜前的原稿与本次 AI 候选稿。 */
+    @PostMapping("/generate/script/review")
+    public AjaxResult getScriptReview(@Valid @RequestBody StoryboardScriptReviewQueryRequest request) {
+        Long userId = SecurityUtils.getUserId();
+        return success(storyboardScriptService.getStoryboardScriptReview(request.getTaskId(), userId));
+    }
+
+    /** 应用逐条/批量审核结果；原稿与未采用候选稿均保留为归档版本。 */
+    @PostMapping("/generate/script/review/apply")
+    public AjaxResult applyScriptReview(@Valid @RequestBody StoryboardScriptReviewRequest request) {
+        Long userId = SecurityUtils.getUserId();
+        storyboardScriptService.applyStoryboardScriptReview(request, userId);
+        return success("审核结果已保存");
+    }
+
     /**
      * 批量生成分镜图脚本（图生图 prompt）。
      * 把上一步 {@link #batchGenerateScript} 写入 {@code aid_storyboard.script_params} 的镜头数据，
@@ -438,7 +455,8 @@ public class StoryboardGenerationController extends BaseController {
                 request.getOverwrite(),
                 request.getContinuityMode(),
                 request.getPreviousStoryboardId(),
-                null);
+                null,
+                request.getPreviewOnly());
         wechatNotifyService.notifyTaskStarted(vo.getTaskId());
         return success(vo);
     }

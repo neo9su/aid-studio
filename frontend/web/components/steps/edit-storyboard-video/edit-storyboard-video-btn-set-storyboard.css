@@ -71,6 +71,38 @@
   padding: 0 calc(12px * var(--create-editor-scale, 1));
 }
 
+.edit-storyboard-video-modal .video-card-generating-mask__progress {
+  width: min(72%, calc(360px * var(--create-editor-scale, 1)));
+  margin: 0;
+}
+
+.edit-storyboard-video-modal .video-card-generating-mask__progress .ant-progress-text {
+  color: rgba(225, 239, 255, 0.9);
+  font-size: calc(12px * var(--create-editor-scale, 1));
+}
+
+.edit-storyboard-video-modal .video-card-generating-mask__progress--indeterminate {
+  position: relative;
+  height: calc(6px * var(--create-editor-scale, 1));
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.edit-storyboard-video-modal .video-card-generating-mask__progress--indeterminate span {
+  position: absolute;
+  inset-block: 0;
+  width: 38%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #24d8f4, #246bff);
+  animation: video-progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes video-progress-indeterminate {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(290%); }
+}
+
 .edit-storyboard-video-modal .video-canvas-empty,
 .edit-storyboard-dubbing-modal .video-canvas-empty {
   display: flex;

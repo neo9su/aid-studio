@@ -74,6 +74,9 @@ public class StoryboardVideoGenerateRequest
     /** 用户选择的参考视频生成记录 ID（可选，仅单镜头生效，aid_gen_record.id）。 */
     private List<Long> referenceVideoRecordIds;
 
+    /** 是否执行精准换脸（测试版）。仅单镜头、且模型声明 supportsFaceSwap=true 时可用。 */
+    private Boolean faceSwap;
+
     /** 可选视频任务意图；只对明确支持该参数的模型开放，批量请求禁止使用。 */
     private String omniReferenceTaskType;
 

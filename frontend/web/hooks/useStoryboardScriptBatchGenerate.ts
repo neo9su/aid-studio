@@ -51,6 +51,14 @@ let sharedStoryboardScriptBatchGen: ReturnType<
   typeof createStoryboardScriptBatchGenerate
 > | null = null
 
+export interface StoryboardScriptBatchResult {
+  ok: boolean
+  panels: StoryboardPanel[]
+  message?: string
+  /** 本次生成任务，用于覆盖生成完成后的原稿 / 候选稿审核。 */
+  taskId?: number
+}
+
 function createStoryboardScriptBatchGenerate() {
   /** 事件回调 / 异步流程一律取最新 store 状态（原 Pinia 实例为响应式，Zustand 需调用时取） */
   const getStore = () => useCreationStore.getState()
@@ -62,11 +70,7 @@ function createStoryboardScriptBatchGenerate() {
   let stopRequested = false
   let resumeFollowGeneration = 0
   let restoreSessionInFlight: Promise<void> | null = null
-  let followInFlight: Promise<{
-    ok: boolean
-    panels: StoryboardPanel[]
-    message?: string
-  }> | null = null
+  let followInFlight: Promise<StoryboardScriptBatchResult> | null = null
 
   const trackCtx = {
     isStopRequested: () => stopRequested,
@@ -120,16 +124,8 @@ function createStoryboardScriptBatchGenerate() {
     taskId: number,
     currentPanels: StoryboardPanel[],
     options?: { progressTotalHint?: number; startDetail?: UserTaskDetailData | null }
-  ): Promise<{
-    ok: boolean
-    panels: StoryboardPanel[]
-    message?: string
-  }> {
-    const run = async (): Promise<{
-      ok: boolean
-      panels: StoryboardPanel[]
-      message?: string
-    }> => {
+  ): Promise<StoryboardScriptBatchResult> {
+    const run = async (): Promise<StoryboardScriptBatchResult> => {
       const followGen = resumeFollowGeneration
       stopRequested = false
       const routeCtx = captureCreationLiveGenScope()
@@ -214,7 +210,7 @@ function createStoryboardScriptBatchGenerate() {
         )
         getStore().setStoryboardProgress(total, total)
         applyStoryboardScriptSuccessOutcome()
-        return { ok: true, panels }
+        return { ok: true, panels, taskId }
       }
 
       if (outcome.partial && taskId) {
@@ -227,7 +223,8 @@ function createStoryboardScriptBatchGenerate() {
         return {
           ok: false,
           panels,
-          message: outcome.message
+          message: outcome.message,
+          taskId
         }
       }
 
@@ -238,7 +235,8 @@ function createStoryboardScriptBatchGenerate() {
       return {
         ok: false,
         panels,
-        message: outcome.message
+        message: outcome.message,
+        taskId
       }
     }
 
@@ -288,11 +286,7 @@ function createStoryboardScriptBatchGenerate() {
   async function runBatchGenerate(
     currentPanels: StoryboardPanel[],
     options?: { manualAgentModelPick?: boolean; sceneIds?: number[] }
-  ): Promise<{
-    ok: boolean
-    panels: StoryboardPanel[]
-    message?: string
-  }> {
+  ): Promise<StoryboardScriptBatchResult> {
     stopRequested = false
     taskProgressMessage.value = ''
     const submitBody = await buildStoryboardScriptSubmitBody({
@@ -377,7 +371,7 @@ function createStoryboardScriptBatchGenerate() {
   async function resumePartialFailedGenerate(
     taskId: number,
     currentPanels: StoryboardPanel[]
-  ): Promise<{ ok: boolean; panels: StoryboardPanel[]; message?: string }> {
+  ): Promise<StoryboardScriptBatchResult> {
     const id = parseTaskId(taskId)
     if (!id) {
       return { ok: false, panels: currentPanels, message: '任务ID无效' }
@@ -415,7 +409,7 @@ function createStoryboardScriptBatchGenerate() {
   async function resumeTrackFromGlobal(
     taskId: number,
     currentPanels: StoryboardPanel[]
-  ): Promise<{ ok: boolean; panels: StoryboardPanel[]; message?: string }> {
+  ): Promise<StoryboardScriptBatchResult> {
     const id = parseTaskId(taskId)
     if (!id) {
       return { ok: false, panels: currentPanels, message: '任务ID无效' }

@@ -35,6 +35,12 @@ public class StoryboardVideoPromptBatchRequest
     /** 是否覆盖已有视频提示词（仅不传 storyboardIds 时生效） */
     private Boolean overwrite;
 
+    /**
+     * 是否仅生成预览。为 true 时任务结果返回候选提示词，但不会写回分镜；
+     * 前端须在用户确认后再调用手动保存接口。
+     */
+    private Boolean previewOnly;
+
     /** 跨镜连续性模式：none / previous_prompt；为空按 none */
     private String continuityMode;
 

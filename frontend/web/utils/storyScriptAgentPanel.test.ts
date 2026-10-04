@@ -108,8 +108,8 @@ describe('story script agent panel chrome', () => {
     expect(panelSource).toContain('reasoning={item.reasoning}')
     expect(panelSource).toContain('StoryScriptAgentInputRequestCard')
     expect(panelSource).toContain('display.applicable && stoppedPartialTrusted')
-    expect(panelSource).toContain('softPauseEnabled ? onPauseReceiving : onStop')
-    expect(panelSource).toContain('onPause={pauseAction}')
+    expect(panelSource).toContain('onPause={onStop}')
+    expect(panelSource).toContain('onResume={onResumeReceiving}')
     expect(panelSource).toContain('AgentPausedRuntimeNotice')
   })
 

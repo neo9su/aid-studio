@@ -4,6 +4,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -12,9 +13,11 @@ import com.aid.common.core.controller.BaseController;
 import com.aid.common.core.domain.AjaxResult;
 import com.aid.common.utils.SecurityUtils;
 import com.aid.rps.voice.dto.RoleVoiceBindRequest;
+import com.aid.rps.voice.dto.RoleVoiceCloneRequest;
 import com.aid.rps.voice.dto.RoleVoiceQueryRequest;
 import com.aid.rps.voice.dto.RoleVoiceUnbindRequest;
 import com.aid.rps.voice.service.IRoleVoiceBindingBusinessService;
+import com.aid.rps.voice.service.RoleVoiceCloneService;
 import com.aid.rps.voice.vo.RoleVoiceBindingVO;
 
 import cn.hutool.core.util.StrUtil;
@@ -70,6 +73,31 @@ public class RoleVoiceBindingController extends BaseController
 
     @Resource
     private IRoleVoiceBindingBusinessService roleVoiceBindingBusinessService;
+
+    @Resource
+    private RoleVoiceCloneService roleVoiceCloneService;
+
+    @GetMapping("/clone/status")
+    public AjaxResult cloneStatus()
+    {
+        return success(roleVoiceCloneService.status());
+    }
+
+    /** 上传样本注册为当前用户私有克隆音色，并立即绑定角色。 */
+    @PostMapping("/clone")
+    public AjaxResult clone(@Valid @RequestBody RoleVoiceCloneRequest request)
+    {
+        try
+        {
+            return success(roleVoiceCloneService.cloneAndBind(request, SecurityUtils.getUserId()));
+        }
+        catch (Exception e)
+        {
+            String msg = StrUtil.blankToDefault(e.getMessage(), "克隆失败");
+            log.error("角色音色克隆失败: assetId={}, err={}", request.getAssetId(), msg, e);
+            return error(msg.length() <= 30 ? msg : "克隆失败");
+        }
+    }
 
     /** 绑定 / 更换角色音色。 */
     @PostMapping("/bind")

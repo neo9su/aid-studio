@@ -23,6 +23,7 @@ public final class MinimaxH3VideoRequestBuilder {
     private static final String OPTION_IMAGES = "images";
     private static final String OPTION_REFERENCE_VIDEOS = "referenceVideos";
     private static final String OPTION_REFERENCE_VIDEO_URL = "referenceVideoUrl";
+    private static final String OPTION_FACE_SWAP = "face_swap";
     private static final String[] LAST_FRAME_KEYS = {"lastFrameImageUrl", "endImageUrl", "end_image_url"};
 
     private MinimaxH3VideoRequestBuilder() {
@@ -31,7 +32,15 @@ public final class MinimaxH3VideoRequestBuilder {
     /** 必须在 Provider 构造上游请求体前调用，确保悬空素材引用被统一清洗。 */
     public static void sanitizePrompt(AiModelConfigVo config, MediaVideoGenerateRequest request) {
         PromptLimits limits = resolvePromptLimits(config, request);
-        ReferencePromptSanitizer.sanitizeInPlace(request, limits.imageCount(), limits.audioCount());
+        if (request == null) {
+            return;
+        }
+        String original = request.getPrompt();
+        String cleaned = ReferencePromptSanitizer.sanitizeForMinimaxH3(
+            original, limits.imageCount(), limits.videoCount(), limits.audioCount());
+        if (!StrUtil.equals(original, cleaned)) {
+            request.setPrompt(cleaned);
+        }
     }
 
     public static Map<String, Object> buildSubmissionBody(AiModelConfigVo config,
@@ -73,6 +82,11 @@ public final class MinimaxH3VideoRequestBuilder {
             case REFERENCE -> addReferences(config, request, content);
         }
 
+        boolean faceSwap = Boolean.TRUE.equals(option(request, OPTION_FACE_SWAP, "faceSwap"));
+        if (faceSwap) {
+            validateFaceSwap(config, request, scene);
+        }
+
         String resolution = resolution(request);
         int duration = duration(request);
         String ratio = ratio(request, scene);
@@ -82,6 +96,9 @@ public final class MinimaxH3VideoRequestBuilder {
         body.put("resolution", resolution);
         body.put("duration", duration);
         body.put("ratio", ratio);
+        if (faceSwap) {
+            body.put("operation", "face_swap");
+        }
         String callbackUrl = MinimaxH3CallbackSupport.resolveCallbackUrlForSubmission(config);
         if (StrUtil.isNotBlank(callbackUrl)) {
             body.put("callback_url", callbackUrl);
@@ -93,16 +110,31 @@ public final class MinimaxH3VideoRequestBuilder {
         return body;
     }
 
+    private static void validateFaceSwap(AiModelConfigVo config, MediaVideoGenerateRequest request, Scene scene) {
+        if (scene != Scene.REFERENCE) {
+            throw rejected("face swap requires reference scene", "精准换脸仅支持多参模型");
+        }
+        if (referenceImages(config, request).size() != 1 || referenceVideos(request).size() != 1) {
+            throw rejected("face swap requires exactly one image and one video",
+                "精准换脸需要一张人物图和一个目标视频");
+        }
+        if (!referenceAudios(config, request).isEmpty()) {
+            throw rejected("face swap does not accept reference audio", "精准换脸会保留目标视频音轨，请移除参考音频");
+        }
+    }
+
     private static String sanitizedPrompt(AiModelConfigVo config, MediaVideoGenerateRequest request) {
         PromptLimits limits = resolvePromptLimits(config, request);
-        return ReferencePromptSanitizer.sanitize(request.getPrompt(), limits.imageCount(), limits.audioCount());
+        return ReferencePromptSanitizer.sanitizeForMinimaxH3(
+            request.getPrompt(), limits.imageCount(), limits.videoCount(), limits.audioCount());
     }
 
     private static PromptLimits resolvePromptLimits(AiModelConfigVo config, MediaVideoGenerateRequest request) {
         Scene scene = requireScene(config);
         int imageCount = countDispatchedImages(config, request, scene);
+        int videoCount = scene == Scene.REFERENCE ? referenceVideos(request).size() : 0;
         int audioCount = scene == Scene.REFERENCE ? referenceAudios(config, request).size() : 0;
-        return new PromptLimits(imageCount, audioCount);
+        return new PromptLimits(imageCount, videoCount, audioCount);
     }
 
     private static void validateTextScene(MediaVideoGenerateRequest request) {
@@ -408,7 +440,7 @@ public final class MinimaxH3VideoRequestBuilder {
         return new ServiceException(clientMessage);
     }
 
-    private record PromptLimits(int imageCount, int audioCount) {
+    private record PromptLimits(int imageCount, int videoCount, int audioCount) {
     }
 
     private enum Scene {

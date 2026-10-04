@@ -60,18 +60,18 @@ public class UserScriptBusinessServiceImpl implements IUserScriptBusinessService
      */
     private static final Pattern BR_TAG_PATTERN = Pattern.compile("(?i)</?br\\s*/?>");
 
-    /** 上传剧本允许的文件扩展名白名单（仅纯文本 .txt，图片/Word 等一律拒绝） */
+    /** 上传剧本允许的文本扩展名白名单（图片/Word 等一律拒绝） */
     private static final Set<String> ALLOWED_UPLOAD_EXTENSIONS =
-            Set.of(ScriptFileExtractor.EXT_TXT);
+            Set.of(ScriptFileExtractor.EXT_TXT, ScriptFileExtractor.EXT_MD);
 
     /** 电影剧本字数上限：1 万字 */
     private static final int MAX_WORD_MOVIE = 10000;
 
-    /** 剧集-单集（指定集数上传）字数上限：1 万字 */
-    private static final int MAX_WORD_EPISODE_SINGLE = 10000;
-
     /** 剧集-整篇（未指定集数、待分集导入）字数上限：10 万字 */
     private static final int MAX_WORD_SERIES = 100000;
+
+    /** 剧集-单集字数上限：与剧集整篇及前端编辑器统一为 10 万字 */
+    private static final int MAX_WORD_EPISODE_SINGLE = MAX_WORD_SERIES;
 
     /** 上传剧本文件大小上限（字节）：10 万字 UTF-8 约 300KB，10MB 富余；超限先拒绝再解析，防超大文件整包进堆 */
     private static final long MAX_UPLOAD_FILE_BYTES = 10L * 1024L * 1024L;
@@ -156,12 +156,13 @@ public class UserScriptBusinessServiceImpl implements IUserScriptBusinessService
         // 剧本原文与上传口径一致：仅允许 <br> 换行标签，其它 HTML 标签一律拒绝
         // （上传/分集导入允许 <br> 入库，保存必须兼容，否则导入内容一经编辑即无法保存）
         assertOnlyLineBreakHtml(originalText);
-        // 字数上限与上传口径一致：保存目标恒为单集/电影整篇，超限拒绝（防绕过上传限制写入超大文本）
+        // 字数上限与上传口径一致：电影 1 万字、剧集单集 10 万字。
         int wordCount = countWord(originalText);
-        if (wordCount > MAX_WORD_EPISODE_SINGLE) {
+        int maxWords = isMovie ? MAX_WORD_MOVIE : MAX_WORD_EPISODE_SINGLE;
+        if (wordCount > maxWords) {
             log.info("剧本保存超字数, projectId={}, episodeId={}, wordCount={}, max={}",
-                    projectId, episodeId, wordCount, MAX_WORD_EPISODE_SINGLE);
-            throw new ServiceException("剧本超1万字");
+                    projectId, episodeId, wordCount, maxWords);
+            throw new ServiceException(isMovie ? "剧本超1万字" : "单集超10万字");
         }
         return project;
     }
@@ -470,12 +471,12 @@ public class UserScriptBusinessServiceImpl implements IUserScriptBusinessService
         }
         boolean singleEpisode = Objects.nonNull(episodeId) && episodeId != 0L;
         if (singleEpisode) {
-            // 指定了剧集ID：按"单集上传"处理，单集限制 1 万字，直接落到该集
+            // 指定了剧集ID：按"单集上传"处理，单集限制 10 万字，直接落到该集
             checkEpisodeBelongsToProject(episodeId, projectId);
             if (wordCount > MAX_WORD_EPISODE_SINGLE) {
                 log.error("剧本上传失败：剧集单集超字数, episodeId={}, wordCount={}, max={}",
                         episodeId, wordCount, MAX_WORD_EPISODE_SINGLE);
-                throw new ServiceException("单集超1万字");
+                throw new ServiceException("单集超10万字");
             }
             getAndCheckProject(projectId, userId, true);
             return doSaveAsNewVersion(projectId, episodeId, userId, originalText, null, null);

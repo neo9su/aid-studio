@@ -58,6 +58,7 @@ public class VoiceWorkbenchService {
     private static final String MIMO_PROTOCOL = "tokendance:openai:chat-completions";
     private static final String MIMO_CLONE = "mimo-v2.5-tts-voiceclone";
     private static final String MIMO_DESIGN = "mimo-v2.5-tts-voicedesign";
+    private static final String QWEN_PROTOCOL = com.aid.media.provider.impl.QwenTtsProviderClient.PROTOCOL;
     private static final Set<String> TTS = Set.of("tokendance:minimax:t2a_v2", "tokendance:ark:tts",
             "tokendance:minimax:t2a_v2_ws", "tokendance:ark:tts_ws");
     private static final int MAX_SAMPLE_BYTES = 20 * 1024 * 1024;
@@ -85,14 +86,16 @@ public class VoiceWorkbenchService {
         AidAiModel registration = modelDefinitions.project(model, "voice_clone");
         String protocol = StrUtil.blankToDefault(synthesis == null ? model.getProtocol() : synthesis.getProtocol(), "");
         boolean mimo = MIMO_PROTOCOL.equals(protocol);
+        boolean qwen = QWEN_PROTOCOL.equals(protocol)
+                || registration != null && QWEN_PROTOCOL.equals(registration.getProtocol());
         List<Map<String, Object>> operations = List.of(
-                operation("SYNTHESIZE", TTS.contains(protocol) || mimo && "mimo-v2.5-tts".equals(model.getRealModelCode()), 9999, false, mimo),
+                operation("SYNTHESIZE", TTS.contains(protocol) || mimo && "mimo-v2.5-tts".equals(model.getRealModelCode()) || qwen, 9999, false, mimo || qwen),
                 operation("REGISTER_CLONE", registration != null && CLONE.equals(registration.getProtocol()) || CLONE.equals(protocol), 1000, true, false),
-                operation("REFERENCE_CLONE", mimo && MIMO_CLONE.equals(model.getRealModelCode()), 9999, true, true),
+                operation("REFERENCE_CLONE", mimo && MIMO_CLONE.equals(model.getRealModelCode()) || qwen, 9999, true, true),
                 operation("DESIGN", mimo && MIMO_DESIGN.equals(model.getRealModelCode()), 9999, false, true));
         String targetRealModel = mimo && (MIMO_DESIGN.equals(model.getRealModelCode()) || MIMO_CLONE.equals(model.getRealModelCode()))
                 ? MIMO_CLONE : model.getRealModelCode();
-        Set<String> targetProtocols = mimo ? Set.of(MIMO_PROTOCOL) : TTS;
+        Set<String> targetProtocols = qwen ? Set.of(QWEN_PROTOCOL) : mimo ? Set.of(MIMO_PROTOCOL) : TTS;
         List<Long> publishTargets = models.list(Wrappers.<AidAiModel>lambdaQuery()
                 .eq(AidAiModel::getProviderId, model.getProviderId())
                 .eq(AidAiModel::getRealModelCode, targetRealModel)
@@ -198,19 +201,20 @@ public class VoiceWorkbenchService {
         if (!modelDefinitions.definitions(model.getId()).isEmpty()) model = operationModel(model,
                 MIMO_PROTOCOL.equals(model.getProtocol()) ? "REFERENCE_CLONE" : "REGISTER_CLONE");
         boolean mimo = MIMO_PROTOCOL.equals(model.getProtocol()) && MIMO_CLONE.equals(model.getRealModelCode());
-        if (!rightsConfirmed || !CLONE.equals(model.getProtocol()) && !mimo) throw new ServiceException("请确认样本授权");
+        boolean qwen = QWEN_PROTOCOL.equals(model.getProtocol());
+        if (!rightsConfirmed || !CLONE.equals(model.getProtocol()) && !mimo && !qwen) throw new ServiceException("请确认样本授权");
         if (file == null || file.isEmpty() || file.getSize() > MAX_SAMPLE_BYTES) throw new ServiceException("样本大小超限");
-        if (mimo && file.getSize() > VoiceReferenceSampleService.MAX_SAMPLE_BYTES) throw new ServiceException("样本编码大小超限");
+        if ((mimo || qwen) && file.getSize() > VoiceReferenceSampleService.MAX_SAMPLE_BYTES) throw new ServiceException("样本编码大小超限");
         try {
             byte[] bytes = file.getBytes();
             TrustedMediaProbe.Metadata metadata = probe.audio(bytes);
             String format = metadata.format();
             String extension = format.contains("mp3") ? "mp3" : format.equals("wav") ? "wav" : format.contains("mov") ? "m4a" : null;
-            if (extension == null || mimo && "m4a".equals(extension)
-                    || !mimo && (metadata.durationMs() < 10000 || metadata.durationMs() > 300000
+            if (extension == null || (mimo || qwen) && "m4a".equals(extension)
+                    || !mimo && !qwen && (metadata.durationMs() < 10000 || metadata.durationMs() > 300000
                     || metadata.channels() != 1 || metadata.sampleRate() < 16000)) throw new ServiceException("样本规格不支持");
             AiModelConfigVo config = configs.selectByModelId(modelId);
-            if (mimo) {
+            if (mimo || qwen) {
                 String storedUrl = com.aid.common.oss.factory.OssFactory.instance().uploadSuffix(bytes, "." + extension, "audio/" + extension).getUrl();
                 String ref = UUID.randomUUID().toString();
                 ObjectNode stored = JSON.createObjectNode().put("adminId", adminId).put("modelId", modelId)
@@ -257,11 +261,13 @@ public class VoiceWorkbenchService {
         source.setProviderId(route.path("providerId").longValue());
         source.setRealModelCode(route.path("realModelCode").asText());
         source.setProtocol(route.path("protocol").asText());
-        boolean referenceResult = MIMO_PROTOCOL.equals(source.getProtocol())
+        boolean qwenReference = QWEN_PROTOCOL.equals(source.getProtocol());
+        boolean referenceResult = qwenReference || MIMO_PROTOCOL.equals(source.getProtocol())
                 && (MIMO_DESIGN.equals(source.getRealModelCode()) || MIMO_CLONE.equals(source.getRealModelCode()));
         if (!referenceResult && !CLONE.equals(source.getProtocol())) throw new ServiceException("配音试听不能发布为新音色");
         String targetRealModel = referenceResult ? MIMO_CLONE : source.getRealModelCode();
-        Set<String> targetProtocols = MIMO_PROTOCOL.equals(source.getProtocol()) ? Set.of(MIMO_PROTOCOL) : TTS;
+        Set<String> targetProtocols = qwenReference ? Set.of(QWEN_PROTOCOL)
+                : MIMO_PROTOCOL.equals(source.getProtocol()) ? Set.of(MIMO_PROTOCOL) : TTS;
         if (referenceResult) {
             var sample = referenceSamples.fetch(task.getOssUrl());
             var metadata = probe.audio(sample.bytes());
@@ -285,16 +291,20 @@ public class VoiceWorkbenchService {
                 || !Objects.equals(target.getRealModelCode(), targetRealModel)) throw new ServiceException("音色模型配置已变化");
         JsonNode input = read(task.getRequestJson());
         String voiceCode = input.path("voiceCode").asText();
+        String librarySampleUrl = qwenReference
+                ? input.path("options").path("referenceSampleUrl").asText()
+                : task.getOssUrl();
+        if (StrUtil.isBlank(librarySampleUrl)) throw new ServiceException("参考样本未持久化");
         AidAiVoiceLibrary existing = voices.getOne(Wrappers.<AidAiVoiceLibrary>lambdaQuery()
                 .eq(AidAiVoiceLibrary::getModelId, target.getId()).eq(AidAiVoiceLibrary::getVoiceCode, voiceCode).last("limit 1"), false);
-        if (existing != null && (!Objects.equals(existing.getSampleUrl(), task.getOssUrl()) || !"0".equals(existing.getDelFlag()))) {
+        if (existing != null && (!Objects.equals(existing.getSampleUrl(), librarySampleUrl) || !"0".equals(existing.getDelFlag()))) {
             throw new ServiceException("音色编码已存在");
         }
         VoiceLibraryUpsertRequest upsert = new VoiceLibraryUpsertRequest();
         upsert.setModelId(target.getId());
         upsert.setVoiceCode(voiceCode);
         upsert.setVoiceName(request.getName());
-        upsert.setSampleUrl(task.getOssUrl());
+        upsert.setSampleUrl(librarySampleUrl);
         upsert.setSampleText(input.path("ttsText").asText().length() <= 500 ? input.path("ttsText").asText() : null);
         upsert.setLanguage(request.getLanguage());
         upsert.setGender(request.getGender());
@@ -325,9 +335,12 @@ public class VoiceWorkbenchService {
         if (!request.isRightsConfirmed()) throw new ServiceException("请确认音色授权");
         boolean clone = "REGISTER_CLONE".equals(request.getOperation()) && CLONE.equals(model.getProtocol());
         boolean mimo = MIMO_PROTOCOL.equals(model.getProtocol());
-        boolean reference = "REFERENCE_CLONE".equals(request.getOperation()) && mimo && MIMO_CLONE.equals(model.getRealModelCode());
+        boolean qwen = QWEN_PROTOCOL.equals(model.getProtocol());
+        boolean reference = "REFERENCE_CLONE".equals(request.getOperation())
+                && (mimo && MIMO_CLONE.equals(model.getRealModelCode()) || qwen);
         boolean design = "DESIGN".equals(request.getOperation()) && mimo && MIMO_DESIGN.equals(model.getRealModelCode());
-        boolean synth = "SYNTHESIZE".equals(request.getOperation()) && (TTS.contains(model.getProtocol()) || mimo && "mimo-v2.5-tts".equals(model.getRealModelCode()));
+        boolean synth = "SYNTHESIZE".equals(request.getOperation())
+                && (TTS.contains(model.getProtocol()) || mimo && "mimo-v2.5-tts".equals(model.getRealModelCode()) || qwen);
         if (!clone && !synth && !reference && !design) throw new ServiceException("音色操作未接通");
         if (!mimo && StrUtil.isNotBlank(request.getDescription()) || (synth || design) && StrUtil.isNotBlank(request.getSourceFileId())) throw new ServiceException("音色参数不支持");
         if (design && StrUtil.isBlank(request.getDescription())) throw new ServiceException("请填写音色描述");
@@ -343,7 +356,7 @@ public class VoiceWorkbenchService {
         }
         if (mimo && synth && StrUtil.isBlank(audio.getVoiceCode())) audio.setVoiceCode("mimo_default");
         audio.setAudioFormat(request.getAudioFormat());
-        if (mimo && StrUtil.isBlank(audio.getAudioFormat())) audio.setAudioFormat("wav");
+        if ((mimo || qwen) && StrUtil.isBlank(audio.getAudioFormat())) audio.setAudioFormat("wav");
         audio.setSampleRate(request.getSampleRate());
         audio.setSpeechRate(request.getSpeechRate());
         audio.setLoudnessRate(request.getLoudnessRate());
@@ -368,7 +381,7 @@ public class VoiceWorkbenchService {
 
     private AidAiModel operationModel(AidAiModel model, String operation) {
         if (modelDefinitions.definitions(model.getId()).isEmpty()) return model;
-        String capability = "REGISTER_CLONE".equals(operation) ? "voice_clone" : "audio";
+        String capability = Set.of("REGISTER_CLONE", "REFERENCE_CLONE").contains(operation) ? "voice_clone" : "audio";
         AidAiModel selected = modelDefinitions.project(model, capability);
         if (selected == null) throw new ServiceException("模型未启用此音色能力");
         return selected;
@@ -379,7 +392,10 @@ public class VoiceWorkbenchService {
         if (model == null || !"0".equals(model.getDelFlag()) || !"audio".equalsIgnoreCase(model.getModelType())
                 || (enabled && !"0".equals(model.getStatus()))) throw new ServiceException("配音模型不可用");
         var provider = providers.getById(model.getProviderId());
-        if (provider == null || !"tokendance".equalsIgnoreCase(provider.getProviderCode())) throw new ServiceException("音色协议尚未接通");
+        String providerCode = provider == null ? "" : StrUtil.nullToEmpty(provider.getProviderCode()).trim().toLowerCase();
+        if (!Set.of("tokendance", "qwen-tts-local", "qwen_tts", "qwen3_tts").contains(providerCode)) {
+            throw new ServiceException("音色协议尚未接通");
+        }
         return model;
     }
 

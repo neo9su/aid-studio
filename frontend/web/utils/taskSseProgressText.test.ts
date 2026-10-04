@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   formatTaskSseLiveText,
   parseTaskSseProgressPayload,
+  resolveTaskSseDisplayProgress,
   withTaskSseDisplayTiming
 } from './taskSseProgressText'
 
@@ -45,5 +46,11 @@ describe('task SSE estimated time display', () => {
     expect(display && formatTaskSseLiveText(display, '')).toBe(
       '生成中，预计约 2 分钟 · 30%'
     )
+    expect(display && resolveTaskSseDisplayProgress(display)).toBe(30)
+  })
+
+  it('uses real progress when eta is unavailable and does not invent progress', () => {
+    expect(resolveTaskSseDisplayProgress({ progress: 42 })).toBe(42)
+    expect(resolveTaskSseDisplayProgress({})).toBeUndefined()
   })
 })

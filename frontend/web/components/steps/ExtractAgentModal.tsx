@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, TransitionEvent as ReactTransitionEvent } from 'react'
-import { Button, Modal, Tooltip, message } from 'antd'
+import { Alert, Button, Modal, Radio, Tooltip, message } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import ModalTitleWatermark from '~/components/ModalTitleWatermark'
 import { ShimmerImage } from '~/components/common/ShimmerImage'
@@ -14,6 +14,7 @@ import { useCreationStore } from '~/stores/creation'
 import type { ExtractAgentOption, ExtractAgents } from '~/stores/creation'
 import type {
   AssetExtractType,
+  AssetExtractScope,
   BillingQuoteRequest,
   ProjectGenConfigVO,
   UserModelListItem
@@ -21,6 +22,7 @@ import type {
 import { getRouteLikeSnapshot } from '~/composables/useRouteLike'
 import { assetUrl } from '~/utils/assetUrl'
 import { buildAssetExtractSubmitBody } from '~/utils/assetExtractSubmitBody'
+import { htmlPlainTextLength } from '~/utils/htmlPlain'
 import subtractIconRaw from '~/assets/img/icon/Subtract.svg'
 import starWhiteIconRaw from '~/assets/img/icon/star_white.svg'
 import {
@@ -61,6 +63,7 @@ export interface ExtractAgentStartPayload {
   manualModelPickByKind: Partial<Record<AgentKind, boolean>>
   scope: ExtractModalScope
   overwrite?: boolean
+  extractScope: AssetExtractScope
 }
 
 interface Props {
@@ -71,6 +74,7 @@ interface Props {
   scope?: ExtractModalScope
   /** start=首次空库；continueOrReextract=剧本变更后继续/重新提取 */
   actionMode?: 'start' | 'continueOrReextract'
+  initialExtractScope?: AssetExtractScope
   onOpenChange: (value: boolean) => void
   onAgentsChange?: (value: ExtractAgents) => void
   onModelCodesChange?: (value: ExtractModelCodes) => void
@@ -94,6 +98,7 @@ export function ExtractAgentModal({
   modelCodes,
   scope = 'all',
   actionMode = 'start',
+  initialExtractScope,
   onOpenChange,
   onAgentsChange,
   onModelCodesChange,
@@ -101,6 +106,8 @@ export function ExtractAgentModal({
 }: Props) {
   const currentProjectId = useCreationStore((state) => state.currentProjectId)
   const currentEpisodeId = useCreationStore((state) => state.currentEpisodeId)
+  const [extractScope, setExtractScope] = useState<AssetExtractScope>('EPISODE_INCREMENTAL')
+  const canChooseProjectFull = scope === 'all' || scope === 'character'
   const visibleColumns = scope === 'all' ? columnConfig : columnConfig.filter((c) => c.kind === scope)
 
   const extractModalTitle =
@@ -379,6 +386,7 @@ export function ExtractAgentModal({
       extractTypes: visibleColumns.map((column) => column.kind as AssetExtractType),
       modelCodes: { ...localModelCodesRef.current },
       manualModelPickByKind: { ...userPickedModelByKindRef.current },
+      extractScope,
       overwrite
     })
     return submitBody
@@ -398,7 +406,8 @@ export function ExtractAgentModal({
     agents: localAgents,
     modelCodes: localModelCodes,
     manualModelPickByKind,
-    scope
+    scope,
+    extractScope
   })
   const continueQuoteKey = `continue:${extractQuoteSelectionKey}`
   const reextractQuoteKey = `reextract:${extractQuoteSelectionKey}`
@@ -460,6 +469,7 @@ export function ExtractAgentModal({
     modelCodes: ExtractModelCodes
     manualModelPickByKind: Partial<Record<AgentKind, boolean>>
     overwrite: boolean
+    extractScope: AssetExtractScope
   } | null>(null)
   const extractFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -481,6 +491,7 @@ export function ExtractAgentModal({
       modelCodes: payload.modelCodes,
       manualModelPickByKind: payload.manualModelPickByKind,
       scope,
+      extractScope: payload.extractScope,
       overwrite: payload.overwrite
     })
     onOpenChange(false)
@@ -518,6 +529,7 @@ export function ExtractAgentModal({
         character: userPickedModelByKindRef.current.character,
         prop: userPickedModelByKindRef.current.prop
       },
+      extractScope,
       overwrite: !!overwrite
     }
     setIsExtracting(true)
@@ -545,6 +557,13 @@ export function ExtractAgentModal({
       setGenConfigReady(false)
     } else {
       setProgressPercent(0)
+      const hasCurrentEpisodeScript =
+        htmlPlainTextLength(useCreationStore.getState().formData.storyScript.content || '') > 0
+      setExtractScope(
+        initialExtractScope || (scope === 'character' && !hasCurrentEpisodeScript
+          ? 'PROJECT_FULL'
+          : 'EPISODE_INCREMENTAL')
+      )
       const resetManualPick = { scene: false, character: false, prop: false }
       userPickedModelByKindRef.current = resetManualPick
       setManualModelPickByKind(resetManualPick)
@@ -596,6 +615,42 @@ export function ExtractAgentModal({
                   onTransitionEnd={onProgressFillTransitionEnd}
                 />
               </div>
+            </div>
+          ) : null}
+
+          {canChooseProjectFull ? (
+            <div className="extract-scope-picker">
+              <div className="extract-scope-picker__title">提取范围</div>
+              <Radio.Group
+                value={extractScope}
+                optionType="button"
+                buttonStyle="solid"
+                disabled={isExtracting}
+                onChange={(event) => setExtractScope(event.target.value as AssetExtractScope)}
+                options={
+                  scope === 'all'
+                    ? [
+                        { label: '当前集增量', value: 'EPISODE_INCREMENTAL' },
+                        { label: '独立项目总纲', value: 'PROJECT_OUTLINE' }
+                      ]
+                    : [
+                        { label: '当前集增量', value: 'EPISODE_INCREMENTAL' },
+                        { label: '独立项目总纲', value: 'PROJECT_OUTLINE' },
+                        { label: '全项目剧本角色库', value: 'PROJECT_FULL' }
+                      ]
+                }
+              />
+              {extractScope === 'PROJECT_FULL' || extractScope === 'PROJECT_OUTLINE' ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={
+                    extractScope === 'PROJECT_OUTLINE'
+                      ? '只分析独立项目总纲，角色、场景、道具会创建为项目级资产，所有分集均可复用。'
+                      : '扫描全部已导入剧本并合并到项目角色库；已有和手工角色会保留。'
+                  }
+                />
+              ) : null}
             </div>
           ) : null}
 
@@ -685,7 +740,7 @@ export function ExtractAgentModal({
                 className="extract-footer__quote"
               />
             </div>
-            {actionMode === 'continueOrReextract' ? (
+            {actionMode === 'continueOrReextract' && extractScope !== 'PROJECT_FULL' ? (
               <div className="extract-footer__quote-row">
                 <span className="extract-footer__quote-label">重新提取</span>
                 <BillingQuoteHint
@@ -702,7 +757,7 @@ export function ExtractAgentModal({
           <Button className="extract-btn-cancel" size="large" onClick={handleCancel}>
             <div className="text-gradient">取消</div>
           </Button>
-          {actionMode === 'continueOrReextract' ? (
+          {actionMode === 'continueOrReextract' && extractScope !== 'PROJECT_FULL' ? (
             <>
               <BillingQuoteConfirm
                 disabled={isExtracting || !genConfigReady}

@@ -56,6 +56,7 @@ export function GlobalSettingPagePanel({
         onScriptTypeChange={(v) => onFieldChange('scriptType', v)}
         onModelStrategyChange={(v) => onFieldChange('modelStrategy', v)}
         onCreationModeChange={(v) => onFieldChange('creationMode', v)}
+        onComplianceProfileChange={(v) => onFieldChange('complianceProfile', v)}
         onModelValueChange={(v) => onPatchStyle(v)}
       />
     </div>

@@ -1,12 +1,20 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Modal, Select, message } from 'antd'
-import { CloseOutlined } from '@ant-design/icons'
+import { Button, Checkbox, Input, Modal, Select, message } from 'antd'
+import { CloseOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import iconStartRaw from '~/assets/img/icon/icon_start.svg'
 import { assetUrl } from '~/utils/assetUrl'
 import { ShimmerImage } from '~/components/common/ShimmerImage'
-import { userVoiceLibraryList } from '~/utils/businessApi'
+import {
+  userReferenceAudioDelete,
+  userReferenceAudioUpload,
+  userRoleVoiceClone,
+  userRoleVoiceCloneStatus,
+  userVoiceLibraryList
+} from '~/utils/businessApi'
+import { uploadAudioToOssWithToast } from '~/utils/ossUpload'
+import { resolveAudioRelativePath } from './select-asset-image/assetGroups'
 import './VoiceTimbrePickerModal.css'
 
 const iconStartUrl = assetUrl(iconStartRaw)
@@ -29,6 +37,7 @@ export type VoiceTimbreItem = {
   /** 服务商名称（用于 MiniMax 文本上限等判断） */
   providerName?: string
   modelCode?: string
+  referenceAudioId?: number
 }
 
 export type VoiceTimbreConfirmPayload = {
@@ -41,6 +50,14 @@ export type VoiceTimbreConfirmPayload = {
   timbreCode?: string
   providerName?: string
   modelCode?: string
+  referenceAudioId?: number
+}
+
+export type VoiceCloneContext = {
+  assetId: number
+  projectId: number
+  episodeId?: number
+  defaultName?: string
 }
 
 export interface VoiceTimbrePickerModalProps {
@@ -48,6 +65,7 @@ export interface VoiceTimbrePickerModalProps {
   initialVoiceName?: string
   onOpenChange: (open: boolean) => void
   onConfirm: (payload: VoiceTimbreConfirmPayload) => void
+  cloneContext?: VoiceCloneContext
 }
 
 const GENDER_MAP: Record<string, string> = { female: '女性', male: '男性', neutral: '中性' }
@@ -68,7 +86,8 @@ export function VoiceTimbrePickerModal({
   open,
   initialVoiceName,
   onOpenChange,
-  onConfirm
+  onConfirm,
+  cloneContext
 }: VoiceTimbrePickerModalProps) {
   /** 从接口加载的音色列表 */
   const [allVoices, setAllVoices] = useState<VoiceTimbreItem[]>([])
@@ -81,6 +100,14 @@ export function VoiceTimbrePickerModal({
   const [filterResetKey, setFilterResetKey] = useState(0)
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [cloneOpen, setCloneOpen] = useState(false)
+  const [cloneBusy, setCloneBusy] = useState(false)
+  const [cloneFile, setCloneFile] = useState<File | null>(null)
+  const [cloneName, setCloneName] = useState('')
+  const [cloneText, setCloneText] = useState('')
+  const [cloneGender, setCloneGender] = useState('neutral')
+  const [cloneAge, setCloneAge] = useState('adult')
+  const [cloneRights, setCloneRights] = useState(false)
   const [playingId, setPlayingIdState] = useState<string | null>(null)
   const playingIdRef = useRef<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -165,7 +192,8 @@ export function VoiceTimbrePickerModal({
       voiceModelId: v.voiceModelId,
       timbreCode: v.timbreCode,
       providerName: v.providerName,
-      modelCode: v.modelCode
+      modelCode: v.modelCode,
+      referenceAudioId: v.referenceAudioId
     })
     onOpenChange(false)
   }
@@ -201,6 +229,14 @@ export function VoiceTimbrePickerModal({
       setFilterName(null)
       setFilterAge(null)
       setFilterAccent(null)
+      setCloneOpen(false)
+      setCloneBusy(false)
+      setCloneFile(null)
+      setCloneName(cloneContext?.defaultName || '')
+      setCloneText('')
+      setCloneGender('neutral')
+      setCloneAge('adult')
+      setCloneRights(false)
       stopAudio()
       // 加载音色列表
       loadVoices().then((voices) => {
@@ -217,6 +253,92 @@ export function VoiceTimbrePickerModal({
   function onCancel() {
     stopAudio()
     onOpenChange(false)
+  }
+
+  function chooseCloneFile() {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.wav,.mp3,audio/wav,audio/mpeg'
+    input.onchange = () => {
+      const file = input.files?.[0]
+      if (!file) return
+      if (file.size > 7.5 * 1024 * 1024) {
+        message.warning('克隆样本不能超过 7.5MB')
+        return
+      }
+      setCloneFile(file)
+      if (!cloneName.trim()) setCloneName(file.name.replace(/\.[^/.]+$/, ''))
+    }
+    input.click()
+  }
+
+  async function submitClone() {
+    if (!cloneContext?.assetId || !cloneContext.projectId) {
+      message.error('请先保存角色资产')
+      return
+    }
+    if (!cloneFile) {
+      message.warning('请上传 1-60 秒的 WAV 或 MP3 样本')
+      return
+    }
+    if (!cloneName.trim()) {
+      message.warning('请填写音色名称')
+      return
+    }
+    if (!cloneRights) {
+      message.warning('请确认已获得声音使用授权')
+      return
+    }
+    setCloneBusy(true)
+    let referenceAudioId: number | null = null
+    try {
+      const cloneStatus = await userRoleVoiceCloneStatus()
+      if (!cloneStatus.enabled) throw new Error(cloneStatus.message || '音色克隆服务未启用')
+      const ossUrl = await uploadAudioToOssWithToast(cloneFile)
+      if (!ossUrl) return
+      const uploadBody: Parameters<typeof userReferenceAudioUpload>[0] = {
+        projectId: cloneContext.projectId,
+        audioName: cloneName.trim(),
+        audioUrl: resolveAudioRelativePath(ossUrl)
+      }
+      if (cloneContext.episodeId && cloneContext.episodeId > 0) {
+        uploadBody.episodeId = cloneContext.episodeId
+      }
+      const sample = await userReferenceAudioUpload(uploadBody)
+      referenceAudioId = Number(sample.id)
+      const binding = await userRoleVoiceClone({
+        assetId: cloneContext.assetId,
+        referenceAudioId,
+        voiceName: cloneName.trim(),
+        sampleText: cloneText.trim() || undefined,
+        language: 'zh-CN',
+        gender: cloneGender,
+        ageRange: cloneAge,
+        rightsConfirmed: true
+      })
+      const voiceId = Number(binding.voiceLibraryId)
+      if (!Number.isFinite(voiceId) || voiceId <= 0) throw new Error('克隆音色未返回有效 ID')
+      message.success('克隆音色已生成并绑定角色')
+      confirmVoice({
+        id: String(voiceId),
+        name: String(binding.voiceName || cloneName.trim()),
+        gender: GENDER_MAP[String(binding.gender || cloneGender)] || '中性',
+        ageLabel: AGE_MAP[String(binding.ageRange || cloneAge)] || '成年',
+        accent: '普通话',
+        avatar: String(binding.avatarUrl || `https://api.dicebear.com/7.x/avataaars/png?seed=${voiceId}`),
+        previewUrl: String(binding.sampleUrl || sample.audioUrl || ossUrl),
+        voiceLibraryId: voiceId,
+        referenceAudioId
+      })
+    } catch (e: unknown) {
+      if (referenceAudioId) {
+        try { await userReferenceAudioDelete({ id: referenceAudioId }) } catch { /* keep original error */ }
+      }
+      const err = e as { msg?: string; message?: string }
+      message.error(err?.msg || err?.message || '克隆音色失败')
+    } finally {
+      setCloneBusy(false)
+    }
   }
 
   useEffect(() => {
@@ -237,7 +359,62 @@ export function VoiceTimbrePickerModal({
       closeIcon={<CloseOutlined className="voice-picker-close" />}
     >
       <div className="voice-picker-shell">
-        <h2 className="voice-picker-title">配音角色</h2>
+        <div className="voice-picker-heading">
+          <h2 className="voice-picker-title">配音角色</h2>
+          {cloneContext ? (
+            <Button
+              className="voice-clone-open-btn"
+              icon={<PlusOutlined />}
+              onClick={() => setCloneOpen((value) => !value)}
+            >
+              克隆新音色
+            </Button>
+          ) : null}
+        </div>
+
+        {cloneContext && cloneOpen ? (
+          <div className="voice-clone-panel">
+            <div className="voice-clone-row">
+              <Input
+                value={cloneName}
+                maxLength={100}
+                placeholder="音色名称"
+                onChange={(event) => setCloneName(event.target.value)}
+              />
+              <Select
+                value={cloneGender}
+                onChange={setCloneGender}
+                options={[
+                  { value: 'female', label: '女性' },
+                  { value: 'male', label: '男性' },
+                  { value: 'neutral', label: '中性' }
+                ]}
+              />
+              <Select
+                value={cloneAge}
+                onChange={setCloneAge}
+                options={Object.entries(AGE_MAP).map(([value, label]) => ({ value, label }))}
+              />
+            </div>
+            <Input
+              value={cloneText}
+              maxLength={500}
+              placeholder="样本中朗读的文字（可选，用于记录）"
+              onChange={(event) => setCloneText(event.target.value)}
+            />
+            <div className="voice-clone-actions">
+              <Button icon={<UploadOutlined />} onClick={chooseCloneFile}>
+                {cloneFile?.name || '上传 WAV / MP3（1-60 秒）'}
+              </Button>
+              <Checkbox checked={cloneRights} onChange={(event) => setCloneRights(event.target.checked)}>
+                我已获得该声音的使用和克隆授权
+              </Checkbox>
+              <Button type="primary" loading={cloneBusy} onClick={() => void submitClone()}>
+                生成并绑定
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="voice-picker-filters">
           <Select

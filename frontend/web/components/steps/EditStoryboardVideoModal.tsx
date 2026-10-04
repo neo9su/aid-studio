@@ -105,6 +105,12 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
   )
   const currentProjectIdValue = useCreationStore((s) => s.currentProjectId)
   const currentEpisodeIdValue = useCreationStore((s) => s.currentEpisodeId)
+  const panelVideoErrorByStoryboardId = useCreationStore(
+    (s) => s.storyboardPanelVideoGenErrorByStoryboardId
+  )
+  const panelVideoStatusByStoryboardId = useCreationStore(
+    (s) => s.storyboardPanelVideoGenStatusByStoryboardId
+  )
   const scriptPanelsRef = useRef(scriptPanelsValue)
   scriptPanelsRef.current = scriptPanelsValue
   const creationModeRef = useRef(creationModeValue)
@@ -118,6 +124,7 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
   const rightPanelLoading = useMirrored(false)
   const videoGenerateTargetKey = useMirrored('')
   const videoGenerateProgressText = useMirrored('分镜视频提交中…')
+  const videoGenerateProgressPercent = useMirrored<number | null>(null)
   const selectedVideoIdx = useMirrored(0)
   const showStoryboardScriptModal = useMirrored(false)
   const scriptEditorKey = useMirrored(0)
@@ -136,6 +143,12 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
   const multiParamPromptGenerateTargetKey = useMirrored('')
   const edgeVideoPrompt = useMirrored('')
   const edgeVideoPromptByStoryboardId = useMirrored<Record<string, string>>({})
+  const submittedVideoPromptByStoryboardId = useMirrored<Record<string, {
+    prompt: string
+    submittedAt?: string
+    modelName?: string
+    recordId?: number
+  }>>({})
 
   const referenceImages = useMirrored<any[]>([])
   const nineGridEnabled = useMirrored(false)
@@ -148,6 +161,7 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
   const isMultiParamSettingExpanded = useMirrored(true)
   const activeMultiParamSettingKey = useMirrored<string | null>(null)
   const multiParamShootingTechnique = useMirrored<{ key: string; value: string } | null>(null)
+  const faceSwapEnabled = useMirrored(false)
 
   const isEdgeVideoSettingExpanded = useMirrored(true)
   const firstFrameImage = useMirrored<any>(null)
@@ -268,6 +282,15 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
     return [...list]
   }
 
+  function currentSceneVideoError(): string {
+    const storyboardId = currentStoryboardId()
+    if (!storyboardId) return ''
+    const key = String(storyboardId)
+    const message = String(panelVideoErrorByStoryboardId[key] ?? '').trim()
+    if (message) return message
+    return panelVideoStatusByStoryboardId[key] === 'failed' ? '视频生成失败' : ''
+  }
+
   function getActiveStoryboardPanel(): StoryboardGeneratePanelHandle | null {
     const tab = leftActiveTab.get()
     if (tab === 'imageToVideo' || tab === 'gridVideo') {
@@ -347,6 +370,7 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
     rightPanelLoading,
     videoGenerateTargetKey,
     videoGenerateProgressText,
+    videoGenerateProgressPercent,
     selectedVideoIdx,
     showStoryboardScriptModal,
     scriptEditorKey,
@@ -364,6 +388,7 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
     multiParamPromptGenerateTargetKey,
     edgeVideoPrompt,
     edgeVideoPromptByStoryboardId,
+    submittedVideoPromptByStoryboardId,
     referenceImages,
     nineGridEnabled,
     isImageToVideoSettingExpanded,
@@ -374,6 +399,7 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
     isMultiParamSettingExpanded,
     activeMultiParamSettingKey,
     multiParamShootingTechnique,
+    faceSwapEnabled,
     isEdgeVideoSettingExpanded,
     firstFrameImage,
     lastFrameImage,
@@ -432,6 +458,7 @@ export function EditStoryboardVideoModal(rawProps: EditStoryboardVideoModalProps
     currentStoryboardId,
     scriptRowLabel,
     currentSceneVideos,
+    currentSceneVideoError,
     projectCreationMode: () => creationModeRef.current,
     getActiveStoryboardPanel,
     openStoryboardScriptEditor

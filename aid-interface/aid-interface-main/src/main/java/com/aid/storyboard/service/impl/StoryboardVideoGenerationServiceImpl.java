@@ -6,6 +6,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -62,18 +63,26 @@ import com.aid.billing.dto.BillingCalcResult;
 import com.aid.billing.service.BillingPreHoldCalculationService;
 import com.aid.billing.service.BillingQuoteAssembler;
 import com.aid.billing.vo.BillingQuoteVO;
+import com.aid.compose.ComposeConstants;
+import com.aid.compose.domain.ComposeCommand;
+import com.aid.compose.domain.ComposeGroup;
+import com.aid.compose.domain.ComposeSubmitResult;
+import com.aid.compose.service.CoreComposeService;
 import com.aid.common.utils.DateUtils;
 import com.aid.common.utils.image.ImageUrlValidator;
 import com.aid.domain.vo.AiModelConfigVo;
 import com.aid.enums.CreationModeEnum;
 import com.aid.enums.GenTypeEnum;
+import com.aid.media.constants.AgnesConstants;
 import com.aid.media.constants.KlingConstants;
+import com.aid.media.constants.MinimaxH3Constants;
 import com.aid.media.dto.MediaTaskResponse;
 import com.aid.media.dto.MediaVideoGenerateRequest;
 import com.aid.media.dto.PreparedMediaBillingInput;
 import com.aid.media.dto.ReferenceAudioInput;
 import com.aid.media.dto.ReferenceVideoInput;
 import com.aid.media.provider.KlingVideoRequestBuilder;
+import com.aid.media.provider.ReferenceImageBase64Support;
 import com.aid.media.provider.ReferenceImageLimiter;
 import com.aid.media.resolver.ReferenceVideoRecordResolver;
 import com.aid.media.service.IMediaGenerationService;
@@ -90,6 +99,8 @@ import com.aid.rps.queue.BatchTaskSlotReservation;
 import com.aid.rps.queue.BatchTaskSlotService;
 import com.aid.rps.queue.BatchParentSubmissionGuard;
 import com.aid.rps.queue.BatchTaskExecutionRejectedException;
+import com.aid.rps.assembler.StoryboardSceneContextAssembler;
+import com.aid.rps.model.StoryboardSceneContext;
 import com.aid.rps.resolver.StoryboardPromptAudioReferenceResolver;
 import com.aid.rps.resolver.StoryboardRoleAudioReferenceResolver;
 import com.aid.rps.service.IRpsFormImageBusinessService.ReferenceEnablePlan;
@@ -103,6 +114,8 @@ import com.aid.storyboard.dto.StoryboardVideoGridGenerateRequest;
 import com.aid.storyboard.dto.StoryboardVideoGenerateVO;
 import com.aid.storyboard.service.IStoryboardVideoGenerationService;
 import com.aid.storyboard.support.StoryboardDurationResolver;
+import com.aid.storyboard.support.StoryboardLongVideoPlanner;
+import com.aid.storyboard.support.StoryboardLongVideoPlanner.Segment;
 import com.aid.storyboard.support.StoryboardVideoAdvancedOptions;
 import com.aid.storyboard.support.StoryboardDurationResolver.Resolution;
 import com.aid.storyboard.video.ResolvedReference;
@@ -188,6 +201,13 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
     /** gen_type 常量：首尾帧视频（与 GenTypeEnum.EDGE 对齐） */
     private static final String GEN_TYPE_EDGE = "edge";
 
+    /** 长视频父任务内部片段；仅供最终合并，不进入用户视频列表。 */
+    private static final String GEN_TYPE_VIDEO_SEGMENT = "video_segment";
+
+    private static final String LONG_COMPOSE_BATCH_PREFIX = "lv_";
+    private static final String LONG_COMPOSE_CALLBACK = ComposeConstants.CALLBACK_STORYBOARD_LONG_VIDEO;
+    private static final long LONG_COMPOSE_BIZ_OFFSET = 900_000L;
+
     /**
      * 分镜原始视频（video 类）单选互斥范围：出片自动设为主视频时，同分镜其余原始视频记录的选中一并重置。
      * compose 类不参与原始视频之间的互斥；原始视频来源发生变化时，其旧合成派生结果会在更新主视频时统一失效。
@@ -220,6 +240,15 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
 
     /** {@code @图片N[name]} 占位正则（与 {@link } 完全一致） */
     private static final Pattern REF_PATTERN = Pattern.compile("@图片(\\d+)\\[([^\\]]+)\\]");
+
+    /** 分镜参数中的资产引用，例如 {@code [角色_初始形象]、[场景_主视]} */
+    private static final Pattern SCRIPT_ASSET_REF_PATTERN = Pattern.compile("\\[([^\\]]+)\\]");
+
+    private static final Set<String> AUTO_REFERENCE_ASSET_TYPES = Set.of("character", "scene", "prop");
+
+    /** 场景四宫格拆分后的固定方位名；与资产拆图服务保持一致。 */
+    private static final List<String> SCENE_DIRECTION_LABELS =
+            List.of("主视", "反打", "左立面", "右立面");
 
     /** Redis 防重锁 Key 前缀（与 AssetExtractServiceImpl.FORM_LOCK_PREFIX 同命名空间） */
     private static final String FORM_LOCK_PREFIX = "asset:form:lock:";
@@ -296,6 +325,9 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
     private IMediaGenerationService mediaGenerationService;
 
     @Autowired
+    private CoreComposeService coreComposeService;
+
+    @Autowired
     private MediaBillingQuotePreparer mediaBillingQuotePreparer;
 
     @Autowired
@@ -324,6 +356,10 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
     /** 自动提示词角色音频占位兜底；历史数据出片时按台词临时自愈，不改写用户原文。 */
     @Autowired
     private StoryboardRoleAudioReferenceResolver roleAudioReferenceResolver;
+
+    /** 专业版提示词未显式引用图片时，按分镜当前场景补齐图生视频首帧。 */
+    @Autowired
+    private StoryboardSceneContextAssembler storyboardSceneContextAssembler;
 
     /** 分厂商 / 分模型参考装配策略路由器（多模态差异化处理 + 可扩展）。 */
     @Autowired
@@ -412,7 +448,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         String creationMode = resolveCreationModeForBatch(ids, userId);
         String funcCode = CreationModeEnum.PRO.getValue().equals(creationMode)
                 ? FUNC_CODE_STORYBOARD_VIDEO_MULTI_PRO : FUNC_CODE_STORYBOARD_VIDEO; // pro 专属多参池 / 通用多参池
-        AiModelConfigVo modelConfig = requireMultiVideoModel(request, funcCode);
+        AiModelConfigVo modelConfig = requireMultiVideoModel(request, funcCode, ids, userId);
         String modelCode = modelConfig.getModelCode();
         Long modelId = modelConfig.getId();
         Integer requestedDuration = Boolean.TRUE.equals(modelConfig.getSupportsDuration())
@@ -442,7 +478,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         String creationMode = resolveCreationModeForBatch(ids, userId);
         String funcCode = CreationModeEnum.PRO.getValue().equals(creationMode)
                 ? FUNC_CODE_STORYBOARD_VIDEO_MULTI_PRO : FUNC_CODE_STORYBOARD_VIDEO;
-        AiModelConfigVo modelConfig = requireMultiVideoModel(request, funcCode);
+        AiModelConfigVo modelConfig = requireMultiVideoModel(request, funcCode, ids, userId);
         int perShotCount = single ? clampCount(request.getCount()) : 1;
         return quotePreparedVideoBatch("STORYBOARD_VIDEO", userId, ids, single,
                 single ? clampCount(request.getCount()) : 1, modelConfig,
@@ -463,7 +499,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         String creationMode = resolveCreationModeForBatch(ids, userId);
         String funcCode = CreationModeEnum.PRO.getValue().equals(creationMode)
                 ? FUNC_CODE_STORYBOARD_VIDEO_MULTI_PRO : FUNC_CODE_STORYBOARD_VIDEO;
-        AiModelConfigVo modelConfig = requireMultiVideoModel(request, funcCode);
+        AiModelConfigVo modelConfig = requireMultiVideoModel(request, funcCode, ids, userId);
         int perShotCount = single ? clampCount(request.getCount()) : 1;
         return quotePreparedVideoBatch("STORYBOARD_VIDEO", userId, ids, single,
                 perShotCount, modelConfig,
@@ -627,19 +663,70 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         return "edit".equals(taskType) ? "video_edit" : "extend".equals(taskType) ? "video_extend" : null;
     }
 
-    private AiModelConfigVo requireMultiVideoModel(StoryboardVideoGenerateRequest request, String funcCode)
+    private AiModelConfigVo requireMultiVideoModel(StoryboardVideoGenerateRequest request, String funcCode,
+            List<Long> storyboardIds, Long userId)
     {
         String requested = multiCapability(request);
         AiModelConfigVo selected = requireVideoModel(request.getModelName(), funcCode, requested);
-        if (requested != null || !"dmc-h3-video".equals(selected.getProtocol())
-                || !hasMultiReferenceSelection(request))
+        if (requested != null || !isReferenceAwareMultiProtocol(selected.getProtocol()))
         {
             return selected;
         }
-        // The existing multi-parameter Web request sends a model code but not a
-        // capability code. Select the bound reference route before quote and
-        // submission so validation, SKU and the upstream payload agree.
-        return requireVideoModel(request.getModelName(), funcCode, "reference_to_video");
+        // H3 / Agnes 的多参入口可同时承载纯文本和参考素材：没有参考素材时必须走
+        // text_to_video，有参考素材时才走 reference_to_video，避免默认能力落到参考模式后
+        // 把已经填写的文本提示词误判为“缺少必要输入”。
+        String inferredCapability = hasMultiReferenceSelection(request)
+                || hasServerSideMultiReferenceSelection(storyboardIds, userId)
+                ? "reference_to_video" : "text_to_video";
+        return requireVideoModel(request.getModelName(), funcCode, inferredCapability);
+    }
+
+    /**
+     * 批量请求不会把每个分镜的底图 / 资产占位重复放进 request，模型能力路由必须同时查看
+     * 服务端分镜数据，否则会误选 text_to_video，后续即使补齐了参考图也无法正确下发。
+     */
+    private boolean hasServerSideMultiReferenceSelection(List<Long> storyboardIds, Long userId)
+    {
+        if (CollectionUtil.isEmpty(storyboardIds))
+        {
+            return false;
+        }
+        for (Long storyboardId : storyboardIds)
+        {
+            AidStoryboard storyboard = loadAndCheckStoryboard(storyboardId, userId);
+            if (storyboard.getFinalImageId() != null && storyboard.getFinalImageId() > 0)
+            {
+                return true;
+            }
+            String referenceInfo = readStoryboardScriptParam(storyboard, "引用信息");
+            if (SCRIPT_ASSET_REF_PATTERN.matcher(referenceInfo).find())
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isReferenceAwareMultiProtocol(String protocol)
+    {
+        return isH3MultiProtocol(protocol)
+                || AgnesConstants.PROTOCOL_VIDEO.equalsIgnoreCase(StrUtil.trim(protocol));
+    }
+
+    static boolean isH3MultiProtocol(String protocol)
+    {
+        return "dmc-h3-video".equalsIgnoreCase(StrUtil.trim(protocol))
+                || MinimaxH3Constants.PROTOCOL_VIDEO.equalsIgnoreCase(StrUtil.trim(protocol));
+    }
+
+    static String inferH3MultiCapability(StoryboardVideoGenerateRequest request)
+    {
+        return inferReferenceAwareMultiCapability(request);
+    }
+
+    static String inferReferenceAwareMultiCapability(StoryboardVideoGenerateRequest request)
+    {
+        return hasMultiReferenceSelection(request) ? "reference_to_video" : "text_to_video";
     }
 
     private static boolean hasMultiReferenceSelection(StoryboardVideoGenerateRequest request)
@@ -711,21 +798,31 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
                         ? StoryboardDurationResolver.resolve(requestedDurationSeconds,
                                 recommended, useRecommended, single, modelConfig)
                         : new Resolution(null, null);
-                MediaVideoGenerateRequest media = buildVideoMediaRequest(
-                        storyboard, shot, modelConfig, userId, aspectRatio, resolution,
-                        duration.durationSeconds(), generateAudio, Map.of());
-                PreparedMediaBillingInput prepared = plannedPrompt
-                        ? mediaBillingQuotePreparer.preparePlannedVideoBilling(media)
-                        : mediaBillingQuotePreparer.prepareVideoBilling(media);
-                BillingCalcResult result = billingPreHoldCalculationService.calculate(
-                        prepared.modelConfig(), prepared.billingInput());
-                if (result == null || !result.isMatched())
+                List<Segment> segments = StoryboardLongVideoPlanner.plan(
+                        shot.finalPrompt, duration.durationSeconds(), modelConfig);
+                List<BillingQuoteVO> segmentQuotes = new ArrayList<>(segments.size());
+                for (Segment segment : segments)
                 {
-                    throw new ServiceException(result == null ? "计费规则缺失" : result.getErrorMessage());
+                    MediaVideoGenerateRequest media = buildVideoMediaRequest(
+                            storyboard, segment.prompt(), shot.referenceImages, shot.baseImageUrl,
+                            shot.lastFrameImageUrl, shot.referenceAudios, shot.referenceVideos,
+                            shot.providerExtraOptions, modelConfig, userId, aspectRatio, resolution,
+                            segment.seconds(), generateAudio, Map.of());
+                    PreparedMediaBillingInput prepared = plannedPrompt
+                            ? mediaBillingQuotePreparer.preparePlannedVideoBilling(media)
+                            : mediaBillingQuotePreparer.prepareVideoBilling(media);
+                    BillingCalcResult result = billingPreHoldCalculationService.calculate(
+                            prepared.modelConfig(), prepared.billingInput());
+                    if (result == null || !result.isMatched())
+                    {
+                        throw new ServiceException(result == null ? "计费规则缺失" : result.getErrorMessage());
+                    }
+                    BillingQuoteVO segmentQuote = billingQuoteAssembler.single(
+                            quoteType, prepared.modelConfig(), result, perShotCount);
+                    segmentQuotes.add(plannedPrompt
+                            ? billingQuoteAssembler.asEstimated(segmentQuote) : segmentQuote);
                 }
-                BillingQuoteVO item = billingQuoteAssembler.single(
-                        quoteType, prepared.modelConfig(), result, perShotCount);
-                items.add(plannedPrompt ? billingQuoteAssembler.asEstimated(item) : item);
+                items.add(billingQuoteAssembler.aggregate(quoteType, segmentQuotes));
             }
         }
         catch (ReferenceAudioValidationException e)
@@ -1332,7 +1429,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         }
         // 相对路径拼完整URL，并据此做远程可达性 + Content-Type 校验
         String full = mediaUrlResolver.toFullUrl(u);
-        if (validateRemoteUrl && !ImageUrlValidator.isValidRemoteImageUrl(full))
+        if (validateRemoteUrl && !isReadableVideoReferenceImage(u, full))
         {
             log.info("首尾帧上传图非法(格式/不可达/非图片): storyboardId={}, url={}", sb.getId(), full);
             throw new ServiceException("图片不可用");
@@ -1752,7 +1849,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
                 }
                 // 相对路径拼完整URL后再做远程可达性 + Content-Type 校验
                 String ovFull = mediaUrlResolver.toFullUrl(ovUrl);
-                if (validateRemoteUrls && !ImageUrlValidator.isValidRemoteImageUrl(ovFull))
+                if (validateRemoteUrls && !isReadableVideoReferenceImage(ovUrl, ovFull))
                 {
                     log.info("多参图生视频临时参考图非法(格式/不可达/非图片): storyboardId={}, name={}, url={}",
                             storyboard.getId(), formName, ovFull);
@@ -2200,6 +2297,19 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             videoPrompt = roleAudioReferenceResolver.normalizeStoredVideoPrompt(
                     videoPrompt, sb.getDialogueText());
         }
+        if (applyMutations)
+        {
+            ensureSceneFourViewSplit(sb, userId);
+        }
+        videoPrompt = alignSceneReferenceToSelectedView(videoPrompt, sceneContext(sb, userId));
+        boolean videoSourceOnly = "edit".equals(request.getOmniReferenceTaskType())
+                || "extend".equals(request.getOmniReferenceTaskType());
+        boolean forbidsImageInput = Boolean.FALSE.equals(modelConfig.getSupportsImageInput());
+        String baseImageUrl = (videoSourceOnly || forbidsImageInput) && request.getBaseImageRecordId() == null
+                ? null : resolveBaseImageUrl(single ? request.getBaseImageRecordId() : null, sb, userId);
+        int maxRefImages = ReferenceImageLimiter.resolveMax(modelConfig, MAX_REFERENCE_IMAGES);
+        videoPrompt = ensureStoryboardAssetReferences(
+                videoPrompt, sb, userId, modelConfig, baseImageUrl, maxRefImages);
         List<ReferenceAudioInput> referenceAudios = resolveAndValidateReferenceAudios(videoPrompt, sb, userId,
                 resolveShotAudioSelection(single, new ExplicitAudioSelection(
                         request.getReferenceAudioRecordIds(), request.getReferenceAudioIds()), snapshotSelection),
@@ -2214,16 +2324,11 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         videoPrompt = alignPromptWithResolvedRoleAudios(videoPrompt, sb, referenceAudios);
         if (applyMutations && single && StrUtil.isNotBlank(overridePrompt))
         {
-            persistVideoPrompt(sb.getId(), userId, videoPrompt);
+            // 工作稿保留用户提交原文；参考图、音频等执行期补齐仅进入生成记录 prompt_text。
+            persistVideoPrompt(sb.getId(), userId, overridePrompt);
         }
         ReferenceResolution resolution = resolveReferences(videoPrompt, sb, userId,
                 single ? request.getReferenceOverrides() : null, applyMutations, validateRemoteUrls);
-        boolean videoSourceOnly = "edit".equals(request.getOmniReferenceTaskType())
-                || "extend".equals(request.getOmniReferenceTaskType());
-        boolean forbidsImageInput = Boolean.FALSE.equals(modelConfig.getSupportsImageInput());
-        String baseImageUrl = (videoSourceOnly || forbidsImageInput) && request.getBaseImageRecordId() == null
-                ? null : resolveBaseImageUrl(single ? request.getBaseImageRecordId() : null, sb, userId);
-        int maxRefImages = ReferenceImageLimiter.resolveMax(modelConfig, MAX_REFERENCE_IMAGES);
         int actualReferenceImages = countDistinctReferenceImages(resolution.references, baseImageUrl);
         if (maxRefImages == ReferenceImageLimiter.FORBID && actualReferenceImages > 0)
         {
@@ -2273,6 +2378,554 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
                 plan.getFirstFrameImageUrl(), overridePrompt, takeCount, null, null, null, null, null,
                 referenceAudios, StoryboardVideoAdvancedOptions.merge(plan.getExtraOptions(), request, modelConfig),
                 null, null, null, referenceVideos);
+    }
+
+    /**
+     * 需要图片输入的视频能力下，专业版批量提示词可能只有自然语言、没有 {@code @图片N}。
+     * 此时确定性地使用本镜场景参考图；显式底图或显式图片引用始终优先。
+     */
+    private String ensureDefaultSceneReference(String prompt, AidStoryboard storyboard, Long userId,
+            AiModelConfigVo modelConfig, boolean hasExplicitBaseImage)
+    {
+        if (!shouldInjectDefaultSceneReference(prompt, modelConfig, hasExplicitBaseImage))
+        {
+            return prompt;
+        }
+        StoryboardSceneContext context = storyboardSceneContextAssembler
+                .assemble(List.of(storyboard), storyboard.getProjectId(), userId)
+                .get(storyboard.getId());
+        String resolved = prependDefaultSceneReference(prompt, modelConfig, context, hasExplicitBaseImage);
+        if (!Objects.equals(prompt, resolved))
+        {
+            log.info("分镜图生视频自动补齐场景首帧: storyboardId={}, referenceImage={}",
+                    storyboard.getId(), context.referenceImageName());
+        }
+        return resolved;
+    }
+
+    /** 当前分镜的确定性场景上下文。 */
+    private StoryboardSceneContext sceneContext(AidStoryboard storyboard, Long userId)
+    {
+        if (storyboard == null || storyboard.getProjectId() == null || userId == null)
+        {
+            return null;
+        }
+        return storyboardSceneContextAssembler
+                .assemble(List.of(storyboard), storyboard.getProjectId(), userId)
+                .get(storyboard.getId());
+    }
+
+    /**
+     * 正式出片前把 AI 生成的 2x2 场景设定图拆成四张独立方向图。
+     * 普通上传场景图不动；只有 prompt 快照明确声明为四宫格的 AI 场景图才会自动拆分。
+     */
+    private void ensureSceneFourViewSplit(AidStoryboard storyboard, Long userId)
+    {
+        StoryboardSceneContext before = sceneContext(storyboard, userId);
+        if (before == null || before.sceneAssetId() == null)
+        {
+            return;
+        }
+        List<AidRolePropSceneFormImage> sources = rolePropSceneFormImageService.list(
+                Wrappers.<AidRolePropSceneFormImage>lambdaQuery()
+                        .select(AidRolePropSceneFormImage::getId,
+                                AidRolePropSceneFormImage::getPromptSnapshot)
+                        .eq(AidRolePropSceneFormImage::getAssetId, before.sceneAssetId())
+                        .eq(AidRolePropSceneFormImage::getProjectId, storyboard.getProjectId())
+                        .eq(AidRolePropSceneFormImage::getUserId, userId)
+                        .eq(AidRolePropSceneFormImage::getIsUse, 1)
+                        .eq(AidRolePropSceneFormImage::getIsSplitSource, 0)
+                        .eq(AidRolePropSceneFormImage::getIsSplitChild, 0)
+                        .eq(AidRolePropSceneFormImage::getDelFlag, DEL_FLAG_NORMAL)
+                        .orderByAsc(AidRolePropSceneFormImage::getSortOrder)
+                        .orderByAsc(AidRolePropSceneFormImage::getId));
+        List<Long> fourViewSourceIds = sources.stream()
+                .filter(image -> isFourViewScenePrompt(image.getPromptSnapshot()))
+                .map(AidRolePropSceneFormImage::getId)
+                .filter(Objects::nonNull)
+                .toList();
+        if (fourViewSourceIds.isEmpty())
+        {
+            return;
+        }
+
+        rpsFormImageBusinessService.splitSceneImageBatch(
+                storyboard.getProjectId(), fourViewSourceIds, userId);
+        StoryboardSceneContext after = sceneContext(storyboard, userId);
+        if (after == null || !hasSceneDirectionSuffix(after.referenceImageName()))
+        {
+            log.warn("分镜视频场景四视图自动拆分未产出方向子图: storyboardId={}, sceneAssetId={}, sourceIds={}",
+                    storyboard.getId(), before.sceneAssetId(), fourViewSourceIds);
+            throw new ServiceException("场景四视图拆分失败，请在资产中拆分后重试");
+        }
+        log.info("分镜视频场景四视图已自动拆分: storyboardId={}, sceneAssetId={}, selectedView={}",
+                storyboard.getId(), before.sceneAssetId(), after.referenceImageName());
+    }
+
+    static boolean isFourViewScenePrompt(String promptSnapshot)
+    {
+        String prompt = StrUtil.trimToEmpty(promptSnapshot);
+        return prompt.contains("四宫格")
+                && (prompt.contains("2×2") || prompt.contains("2x2") || prompt.contains("2X2")
+                    || prompt.contains("4 个等大子画面") || prompt.contains("4个等大子画面"));
+    }
+
+    static boolean hasSceneDirectionSuffix(String imageName)
+    {
+        String normalized = com.aid.rps.resolver.StoryboardImageReferenceResolver
+                .normalizeAssetRefName(imageName);
+        return SCENE_DIRECTION_LABELS.stream().anyMatch(label -> normalized.endsWith("_" + label));
+    }
+
+    /**
+     * 把提示词里旧的整张场景引用改成当前分镜选中的单一方向子图。
+     * 用户已经明确写了某个方位时保持原选择，不强行覆盖。
+     */
+    static String alignSceneReferenceToSelectedView(String prompt, StoryboardSceneContext context)
+    {
+        if (StrUtil.isBlank(prompt) || context == null
+                || !hasSceneDirectionSuffix(context.referenceImageName()))
+        {
+            return prompt;
+        }
+        String selected = StrUtil.trim(context.referenceImageName());
+        String selectedNormalized = com.aid.rps.resolver.StoryboardImageReferenceResolver
+                .normalizeAssetRefName(selected);
+        String selectedBase = selectedNormalized;
+        for (String label : SCENE_DIRECTION_LABELS)
+        {
+            String suffix = "_" + label;
+            if (selectedBase.endsWith(suffix))
+            {
+                selectedBase = selectedBase.substring(0, selectedBase.length() - suffix.length());
+                break;
+            }
+        }
+        String sceneName = com.aid.rps.resolver.StoryboardImageReferenceResolver
+                .normalizeAssetRefName(context.sceneName());
+        Matcher matcher = REF_PATTERN.matcher(prompt);
+        StringBuffer out = new StringBuffer(prompt.length() + 32);
+        boolean changed = false;
+        while (matcher.find())
+        {
+            String current = com.aid.rps.resolver.StoryboardImageReferenceResolver
+                    .normalizeAssetRefName(matcher.group(2));
+            boolean sameScene = current.equals(selectedBase) || current.equals(sceneName);
+            if (sameScene && !hasSceneDirectionSuffix(current))
+            {
+                String replacement = "@图片" + matcher.group(1) + "[" + selected + "]";
+                matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
+                changed = true;
+            }
+            else
+            {
+                matcher.appendReplacement(out, Matcher.quoteReplacement(matcher.group()));
+            }
+        }
+        matcher.appendTail(out);
+        return changed ? out.toString() : prompt;
+    }
+
+    /**
+     * 出片前按本分镜语义确定性补齐已启用的角色、场景和道具参考图。
+     * <p>
+     * LLM 生成的提示词可能遗漏 {@code @图片N}，因此这一层不依赖 LLM；但也不会把整个项目的所有
+     * 资产无差别塞给模型，只补分镜引用信息、当前场景或分镜文本明确命中的资产。
+     */
+    private String ensureStoryboardAssetReferences(String prompt, AidStoryboard storyboard, Long userId,
+            AiModelConfigVo modelConfig, String baseImageUrl, int maxReferenceImages)
+    {
+        if (!supportsAutomaticAssetReferences(prompt, modelConfig)
+                || storyboard == null || storyboard.getProjectId() == null
+                || maxReferenceImages == ReferenceImageLimiter.FORBID)
+        {
+            return prompt;
+        }
+        int availableSlots = maxReferenceImages == Integer.MAX_VALUE
+                ? Integer.MAX_VALUE
+                : Math.max(0, maxReferenceImages - (StrUtil.isBlank(baseImageUrl) ? 0 : 1));
+        if (availableSlots == 0)
+        {
+            return prompt;
+        }
+        List<AutomaticReferenceAsset> assets = loadAutomaticReferenceAssets(
+                storyboard.getProjectId(), userId);
+        if (CollectionUtil.isEmpty(assets))
+        {
+            return prompt;
+        }
+        StoryboardSceneContext sceneContext = storyboardSceneContextAssembler
+                .assemble(List.of(storyboard), storyboard.getProjectId(), userId)
+                .get(storyboard.getId());
+        String referenceInfo = readStoryboardScriptParam(storyboard, "引用信息");
+        String searchableText = String.join("\n",
+                StrUtil.nullToEmpty(prompt),
+                StrUtil.nullToEmpty(storyboard.getStoryScript()),
+                StrUtil.nullToEmpty(storyboard.getDialogueText()),
+                StrUtil.nullToEmpty(storyboard.getScriptParams()));
+        AutomaticReferencePlan plan = appendAutomaticAssetReferences(
+                prompt,
+                referenceInfo,
+                sceneContext == null ? null : sceneContext.referenceImageName(),
+                searchableText,
+                assets,
+                availableSlots);
+        if (CollectionUtil.isNotEmpty(plan.addedNames()))
+        {
+            log.info("分镜视频自动补齐资产参考: storyboardId={}, modelCode={}, baseImage={}, max={}, added={}",
+                    storyboard.getId(), modelConfig.getModelCode(), StrUtil.isNotBlank(baseImageUrl),
+                    maxReferenceImages, plan.addedNames());
+        }
+        return plan.prompt();
+    }
+
+    private static boolean supportsAutomaticAssetReferences(String prompt, AiModelConfigVo modelConfig)
+    {
+        if (StrUtil.isBlank(prompt) || modelConfig == null
+                || Boolean.FALSE.equals(modelConfig.getSupportsImageInput()))
+        {
+            return false;
+        }
+        String capability = StrUtil.blankToDefault(modelConfig.getCapabilityCode(), modelConfig.getGenerateMode());
+        String normalized = StrUtil.trim(capability);
+        return "image_to_video".equalsIgnoreCase(normalized)
+                || "reference_to_video".equalsIgnoreCase(normalized);
+    }
+
+    private String readStoryboardScriptParam(AidStoryboard storyboard, String key)
+    {
+        if (storyboard == null || StrUtil.isBlank(storyboard.getScriptParams()))
+        {
+            return "";
+        }
+        try
+        {
+            JsonNode value = OBJECT_MAPPER.readTree(storyboard.getScriptParams()).get(key);
+            if (value == null || value.isNull())
+            {
+                return "";
+            }
+            return value.isTextual() ? value.asText("") : value.toString();
+        }
+        catch (Exception e)
+        {
+            log.warn("分镜参数解析失败，自动参考图将按分镜文本匹配: storyboardId={}, err={}",
+                    storyboard.getId(), e.getMessage());
+            return "";
+        }
+    }
+
+    /** 载入每个主资产当前已启用的图片；真正下发的引用名始终是 form_image.name。 */
+    private List<AutomaticReferenceAsset> loadAutomaticReferenceAssets(Long projectId, Long userId)
+    {
+        if (projectId == null || userId == null)
+        {
+            return List.of();
+        }
+        List<AidRolePropSceneFormImage> images = rolePropSceneFormImageService.list(
+                Wrappers.<AidRolePropSceneFormImage>lambdaQuery()
+                        .select(AidRolePropSceneFormImage::getId,
+                                AidRolePropSceneFormImage::getFormId,
+                                AidRolePropSceneFormImage::getAssetId,
+                                AidRolePropSceneFormImage::getName,
+                                AidRolePropSceneFormImage::getImageUrl,
+                                AidRolePropSceneFormImage::getSortOrder)
+                        .eq(AidRolePropSceneFormImage::getProjectId, projectId)
+                        .eq(AidRolePropSceneFormImage::getUserId, userId)
+                        .eq(AidRolePropSceneFormImage::getIsUse, 1)
+                        .eq(AidRolePropSceneFormImage::getIsSplitSource, 0)
+                        .eq(AidRolePropSceneFormImage::getDelFlag, DEL_FLAG_NORMAL)
+                        .isNotNull(AidRolePropSceneFormImage::getImageUrl)
+                        .orderByAsc(AidRolePropSceneFormImage::getSortOrder)
+                        .orderByAsc(AidRolePropSceneFormImage::getId));
+        images = images.stream()
+                .filter(image -> image.getAssetId() != null && StrUtil.isNotBlank(image.getName())
+                        && StrUtil.isNotBlank(image.getImageUrl()))
+                .toList();
+        if (CollectionUtil.isEmpty(images))
+        {
+            return List.of();
+        }
+        Set<Long> assetIds = images.stream().map(AidRolePropSceneFormImage::getAssetId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<Long> formIds = images.stream().map(AidRolePropSceneFormImage::getFormId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, AidRolePropScene> assetsById = rolePropSceneService.list(
+                Wrappers.<AidRolePropScene>lambdaQuery()
+                        .select(AidRolePropScene::getId, AidRolePropScene::getName,
+                                AidRolePropScene::getAliasesName, AidRolePropScene::getAssetType)
+                        .in(AidRolePropScene::getId, assetIds)
+                        .eq(AidRolePropScene::getProjectId, projectId)
+                        .eq(AidRolePropScene::getUserId, userId)
+                        .eq(AidRolePropScene::getDelFlag, DEL_FLAG_NORMAL)).stream()
+                .filter(asset -> AUTO_REFERENCE_ASSET_TYPES.contains(asset.getAssetType()))
+                .collect(Collectors.toMap(AidRolePropScene::getId, Function.identity()));
+        Map<Long, AidRolePropSceneForm> formsById = CollectionUtil.isEmpty(formIds) ? Map.of()
+                : rolePropSceneFormService.list(
+                        Wrappers.<AidRolePropSceneForm>lambdaQuery()
+                                .select(AidRolePropSceneForm::getId, AidRolePropSceneForm::getName)
+                                .in(AidRolePropSceneForm::getId, formIds)
+                                .eq(AidRolePropSceneForm::getProjectId, projectId)
+                                .eq(AidRolePropSceneForm::getUserId, userId)
+                                .eq(AidRolePropSceneForm::getDelFlag, DEL_FLAG_NORMAL)).stream()
+                        .collect(Collectors.toMap(AidRolePropSceneForm::getId, Function.identity()));
+
+        Map<Long, List<AidRolePropSceneFormImage>> imagesByAsset = new LinkedHashMap<>();
+        images.forEach(image -> imagesByAsset
+                .computeIfAbsent(image.getAssetId(), ignored -> new ArrayList<>()).add(image));
+        List<AutomaticReferenceAsset> result = new ArrayList<>();
+        for (Map.Entry<Long, List<AidRolePropSceneFormImage>> entry : imagesByAsset.entrySet())
+        {
+            AidRolePropScene asset = assetsById.get(entry.getKey());
+            if (asset == null)
+            {
+                continue;
+            }
+            LinkedHashSet<String> imageNames = new LinkedHashSet<>();
+            LinkedHashSet<String> aliases = new LinkedHashSet<>();
+            LinkedHashSet<String> mentionTerms = new LinkedHashSet<>();
+            addReferenceTerm(aliases, asset.getName());
+            addReferenceTerm(mentionTerms, asset.getName());
+            if (StrUtil.isNotBlank(asset.getAliasesName()))
+            {
+                for (String alias : asset.getAliasesName().split("[,，、;；\\r\\n]+"))
+                {
+                    addReferenceTerm(aliases, alias);
+                    addReferenceTerm(mentionTerms, alias);
+                }
+            }
+            for (AidRolePropSceneFormImage image : entry.getValue())
+            {
+                addReferenceTerm(imageNames, image.getName());
+                addReferenceTerm(aliases, image.getName());
+                AidRolePropSceneForm form = formsById.get(image.getFormId());
+                if (form != null && StrUtil.isNotBlank(form.getName()))
+                {
+                    addReferenceTerm(aliases, form.getName());
+                    addReferenceTerm(aliases, asset.getName() + "_" + form.getName());
+                }
+            }
+            if (!imageNames.isEmpty())
+            {
+                result.add(new AutomaticReferenceAsset(asset.getId(), asset.getAssetType(),
+                        imageNames.iterator().next(), List.copyOf(imageNames),
+                        List.copyOf(aliases), List.copyOf(mentionTerms)));
+            }
+        }
+        result.sort(java.util.Comparator
+                .comparingInt((AutomaticReferenceAsset asset) -> automaticReferencePriority(asset.assetType()))
+                .thenComparing(AutomaticReferenceAsset::assetId));
+        return result;
+    }
+
+    private static int automaticReferencePriority(String assetType)
+    {
+        return switch (StrUtil.nullToEmpty(assetType))
+        {
+            case "character" -> 0;
+            case "scene" -> 1;
+            case "prop" -> 2;
+            default -> 3;
+        };
+    }
+
+    private static void addReferenceTerm(Set<String> target, String value)
+    {
+        String term = StrUtil.trim(value);
+        if (StrUtil.isNotBlank(term))
+        {
+            target.add(term);
+        }
+    }
+
+    /** 纯计划函数，供单元测试覆盖去重、优先级与模型上限。 */
+    static AutomaticReferencePlan appendAutomaticAssetReferences(String prompt, String referenceInfo,
+            String sceneReferenceName, String searchableText, List<AutomaticReferenceAsset> assets,
+            int referenceSlotLimit)
+    {
+        String sourcePrompt = StrUtil.nullToEmpty(prompt);
+        if (referenceSlotLimit <= 0 || CollectionUtil.isEmpty(assets))
+        {
+            return new AutomaticReferencePlan(sourcePrompt, List.of());
+        }
+        Set<Long> usedAssetIds = new LinkedHashSet<>();
+        Set<String> usedUnknownNames = new LinkedHashSet<>();
+        int nextIndex = 1;
+        Matcher existingMatcher = REF_PATTERN.matcher(sourcePrompt);
+        while (existingMatcher.find())
+        {
+            try
+            {
+                nextIndex = Math.max(nextIndex, Integer.parseInt(existingMatcher.group(1)) + 1);
+            }
+            catch (NumberFormatException ignored)
+            {
+                // 正则只接受数字，此分支仅作溢出保护。
+            }
+            AutomaticReferenceAsset matched = findAutomaticReferenceAsset(existingMatcher.group(2), assets);
+            if (matched == null)
+            {
+                usedUnknownNames.add(normalizeAssetRefName(existingMatcher.group(2)));
+            }
+            else
+            {
+                usedAssetIds.add(matched.assetId());
+            }
+        }
+        int usedSlots = usedAssetIds.size() + usedUnknownNames.size();
+        if (usedSlots >= referenceSlotLimit)
+        {
+            return new AutomaticReferencePlan(sourcePrompt, List.of());
+        }
+
+        LinkedHashMap<Long, String> candidates = new LinkedHashMap<>();
+        Matcher scriptMatcher = SCRIPT_ASSET_REF_PATTERN.matcher(StrUtil.nullToEmpty(referenceInfo));
+        while (scriptMatcher.find())
+        {
+            AutomaticReferenceAsset asset = findAutomaticReferenceAsset(scriptMatcher.group(1), assets);
+            addAutomaticReferenceCandidate(candidates, usedAssetIds, asset, scriptMatcher.group(1));
+        }
+        AutomaticReferenceAsset sceneAsset = findAutomaticReferenceAsset(sceneReferenceName, assets);
+        addAutomaticReferenceCandidate(candidates, usedAssetIds, sceneAsset, sceneReferenceName);
+        String search = StrUtil.nullToEmpty(searchableText);
+        for (AutomaticReferenceAsset asset : assets)
+        {
+            if (usedAssetIds.contains(asset.assetId()) || candidates.containsKey(asset.assetId()))
+            {
+                continue;
+            }
+            boolean mentioned = asset.mentionTerms().stream()
+                    .filter(term -> StrUtil.length(term) >= 2)
+                    .anyMatch(search::contains);
+            if (mentioned)
+            {
+                candidates.put(asset.assetId(), asset.referenceName());
+            }
+        }
+
+        int remaining = referenceSlotLimit == Integer.MAX_VALUE
+                ? Integer.MAX_VALUE : referenceSlotLimit - usedSlots;
+        List<String> additions = new ArrayList<>();
+        for (Map.Entry<Long, String> candidate : candidates.entrySet())
+        {
+            if (remaining <= 0)
+            {
+                break;
+            }
+            AutomaticReferenceAsset asset = assets.stream()
+                    .filter(value -> Objects.equals(value.assetId(), candidate.getKey()))
+                    .findFirst().orElse(null);
+            String referenceName = selectResolvableReferenceName(asset, candidate.getValue());
+            if (StrUtil.isBlank(referenceName) || referenceName.contains("]"))
+            {
+                continue;
+            }
+            additions.add("@图片" + nextIndex++ + "[" + referenceName + "]");
+            remaining--;
+        }
+        if (additions.isEmpty())
+        {
+            return new AutomaticReferencePlan(sourcePrompt, List.of());
+        }
+        String prefix = "参考资产（自动绑定，必须保持主体外观、服装、道具和场景一致）："
+                + String.join("、", additions);
+        List<String> addedNames = additions.stream()
+                .map(value -> value.substring(value.indexOf('[') + 1, value.length() - 1))
+                .toList();
+        return new AutomaticReferencePlan(prefix + "\n" + sourcePrompt, addedNames);
+    }
+
+    private static void addAutomaticReferenceCandidate(Map<Long, String> candidates, Set<Long> usedAssetIds,
+            AutomaticReferenceAsset asset, String requestedName)
+    {
+        if (asset != null && !usedAssetIds.contains(asset.assetId()))
+        {
+            candidates.putIfAbsent(asset.assetId(), requestedName);
+        }
+    }
+
+    private static AutomaticReferenceAsset findAutomaticReferenceAsset(String rawName,
+            List<AutomaticReferenceAsset> assets)
+    {
+        if (StrUtil.isBlank(rawName))
+        {
+            return null;
+        }
+        Set<String> requestedKeys = new LinkedHashSet<>(
+                com.aid.rps.resolver.StoryboardImageReferenceResolver.candidateLookupKeys(rawName));
+        for (AutomaticReferenceAsset asset : assets)
+        {
+            for (String alias : asset.aliases())
+            {
+                List<String> aliasKeys = com.aid.rps.resolver.StoryboardImageReferenceResolver
+                        .candidateLookupKeys(alias);
+                if (aliasKeys.stream().anyMatch(requestedKeys::contains))
+                {
+                    return asset;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String selectResolvableReferenceName(AutomaticReferenceAsset asset, String requestedName)
+    {
+        if (asset == null)
+        {
+            return null;
+        }
+        Set<String> requestedKeys = new LinkedHashSet<>(
+                com.aid.rps.resolver.StoryboardImageReferenceResolver.candidateLookupKeys(requestedName));
+        for (String imageName : asset.imageNames())
+        {
+            if (com.aid.rps.resolver.StoryboardImageReferenceResolver.candidateLookupKeys(imageName)
+                    .stream().anyMatch(requestedKeys::contains))
+            {
+                return imageName;
+            }
+        }
+        return asset.referenceName();
+    }
+
+    static record AutomaticReferenceAsset(Long assetId, String assetType, String referenceName,
+            List<String> imageNames, List<String> aliases, List<String> mentionTerms)
+    {
+    }
+
+    static record AutomaticReferencePlan(String prompt, List<String> addedNames)
+    {
+    }
+
+    static String prependDefaultSceneReference(String prompt, AiModelConfigVo modelConfig,
+            StoryboardSceneContext context, boolean hasExplicitBaseImage)
+    {
+        if (!shouldInjectDefaultSceneReference(prompt, modelConfig, hasExplicitBaseImage)
+                || context == null || StrUtil.isBlank(context.referenceImageName())
+                || context.referenceImageName().contains("]"))
+        {
+            return prompt;
+        }
+        String capability = StrUtil.blankToDefault(modelConfig.getCapabilityCode(), modelConfig.getGenerateMode());
+        String purpose = "image_to_video".equalsIgnoreCase(StrUtil.trim(capability))
+                ? "作为首帧场景、构图与光线参考。"
+                : "作为场景、构图与光线参考。";
+        return "@图片1[" + StrUtil.trim(context.referenceImageName()) + "] " + purpose + "\n" + prompt;
+    }
+
+    private static boolean shouldInjectDefaultSceneReference(String prompt, AiModelConfigVo modelConfig,
+            boolean hasExplicitBaseImage)
+    {
+        if (modelConfig == null || hasExplicitBaseImage || StrUtil.isBlank(prompt)
+                || REF_PATTERN.matcher(prompt).find()
+                || Boolean.FALSE.equals(modelConfig.getSupportsImageInput()))
+        {
+            return false;
+        }
+        String capability = StrUtil.blankToDefault(modelConfig.getCapabilityCode(), modelConfig.getGenerateMode());
+        String normalized = StrUtil.trim(capability);
+        return "image_to_video".equalsIgnoreCase(normalized)
+                || "reference_to_video".equalsIgnoreCase(normalized);
     }
 
     /** 模型图片上下限按真实下发素材计数：显式首帧与提示词参考图合并去重。 */
@@ -2363,7 +3016,12 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         String baseImageUrl = (videoSourceOnly || forbidsImageInput) && request.getBaseImageRecordId() == null
                 ? null : resolveBaseImageUrl(single ? request.getBaseImageRecordId() : null, storyboard, userId);
         int maxReferences = ReferenceImageLimiter.resolveMax(modelConfig, MAX_REFERENCE_IMAGES);
-        String plannedPrompt = single ? StrUtil.blankToDefault(request.getVideoPrompt(), "") : "";
+        String plannedPrompt = single
+                ? StrUtil.blankToDefault(request.getVideoPrompt(), storyboard.getVideoPrompt())
+                : StrUtil.nullToEmpty(storyboard.getVideoPrompt());
+        plannedPrompt = alignSceneReferenceToSelectedView(plannedPrompt, sceneContext(storyboard, userId));
+        plannedPrompt = ensureStoryboardAssetReferences(
+                plannedPrompt, storyboard, userId, modelConfig, baseImageUrl, maxReferences);
         ReferenceResolution resolution = resolveReferences(plannedPrompt, storyboard, userId,
                 single ? request.getReferenceOverrides() : null, false, false);
         int actualReferenceImages = countDistinctReferenceImages(resolution.references, baseImageUrl);
@@ -2475,7 +3133,8 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         }
         if (applyMutations && useFrontPrompt)
         {
-            persistVideoPromptImage(sb.getId(), userId, videoPrompt);
+            // 工作稿保留用户提交原文；模型执行文本由生成记录单独留档。
+            persistVideoPromptImage(sb.getId(), userId, request.getVideoPrompt());
         }
         List<ResolvedReference> references = new ArrayList<>();
         references.add(new ResolvedReference(1, "参考图1", "参考图1", null, false, refImageUrl));
@@ -2557,11 +3216,23 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             throw new ServiceException("图片不可用");
         }
         String fullUrl = mediaUrlResolver.toFullUrl(referenceImageUrl);
-        if (validateRemoteUrl && !ImageUrlValidator.isValidRemoteImageUrl(fullUrl))
+        if (validateRemoteUrl && !isReadableVideoReferenceImage(referenceImageUrl, fullUrl))
         {
             throw new ServiceException("图片不可用");
         }
         return fullUrl;
+    }
+
+    /**
+     * 视频参考图可读性校验。通用远程校验会按 SSRF 规则拒绝 localhost/127.0.0.1，
+     * 但本地上传模式恰好使用本站 {@code /profile} 回环地址；仅当该 URL 能安全映射到
+     * profile 根目录内真实、大小合法的图片文件时放行，其余地址仍走远程强校验。
+     */
+    static boolean isReadableVideoReferenceImage(String originalUrl, String fullUrl)
+    {
+        return ReferenceImageBase64Support.isReadableLocalProfileImage(originalUrl)
+                || ReferenceImageBase64Support.isReadableLocalProfileImage(fullUrl)
+                || ImageUrlValidator.isValidRemoteImageUrl(fullUrl);
     }
 
     /**
@@ -2603,7 +3274,8 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         videoPrompt = alignPromptWithResolvedRoleAudios(videoPrompt, sb, referenceAudios);
         if (applyMutations && single && StrUtil.isNotBlank(overridePrompt))
         {
-            persistVideoPrompt(sb.getId(), userId, videoPrompt);
+            // 工作稿保留用户提交原文；模型执行文本由生成记录单独留档。
+            persistVideoPrompt(sb.getId(), userId, overridePrompt);
         }
         VideoReferenceContext ctx = new VideoReferenceContext(videoPrompt, request.getUserInputText(),
                 List.of(), firstUrl, lastUrl, modelConfig, request.getGenerateAudio(), 0);
@@ -2824,6 +3496,13 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
                 String reason = rejected.isEmpty() ? "没有可生成的分镜" : rejected.get(0).getReason();
                 throw TaskErrorPresentation.toServiceException(reason, "没有可生成分镜");
             }
+            long longShotCount = prepared.stream().filter(item ->
+                    StoryboardLongVideoPlanner.plan(item.finalPrompt, item.durationSeconds, modelConfig).size() > 1)
+                    .count();
+            if (longShotCount > 0 && (prepared.size() != 1 || perShotCount != 1))
+            {
+                throw new ServiceException("长视频暂仅支持单分镜、单个生成");
+            }
             slotReservation = resolveWorkflowSlot(prepared, inheritedReservation, batchWorkflow);
             acquiredHere = inheritedReservation == null && slotReservation != null;
             return createBatchTaskAndEnqueue(userId, modelCode, modelId, modelConfig, aspectRatio, resolution,
@@ -2890,13 +3569,26 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         Long episodeId = firstSb.getEpisodeId();
 
         int newSubtasks = 0;
+        int longVideoSegmentCount = 0;
         List<Long> acceptedIds = new ArrayList<>();
         List<Map<String, Object>> shotsSnapshot = new ArrayList<>();
         List<Map<String, Object>> allShotsSnapshot = new ArrayList<>();
         for (int i = 0; i < prepared.size(); i++)
         {
             PreparedShot ps = prepared.get(i);
-            newSubtasks += ps.takeCount;
+            List<Segment> segments = StoryboardLongVideoPlanner.plan(
+                    ps.finalPrompt, ps.durationSeconds, modelConfig);
+            if (segments.size() > 1 && ps.takeCount != 1)
+            {
+                throw new ServiceException("长视频每次仅支持生成1个");
+            }
+            newSubtasks += segments.size() * ps.takeCount;
+            if (segments.size() > 1)
+            {
+                // 所有片段完成后还需一个本地合并子任务，父任务必须等合并产物落库再收口。
+                newSubtasks += 1;
+                longVideoSegmentCount = segments.size();
+            }
             acceptedIds.add(ps.storyboard.getId());
             Map<String, Object> s = new LinkedHashMap<>();
             s.put("storyboardId", ps.storyboard.getId());
@@ -2936,6 +3628,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         inputMap.put("generateAudio", generateAudio);
         inputMap.put("userInputText", userInputText);
         inputMap.put("overwriteExistingFinal", overwriteExistingFinal);
+        inputMap.put("longVideoSegmentCount", longVideoSegmentCount);
         inputMap.put("shots", shotsSnapshot);
         // 稳定全集：续生时据此兜底全部镜头（含未开始/无成功快照的），不依赖增量 resultData.shots
         inputMap.put("allShots", allShotsSnapshot);
@@ -3037,20 +3730,26 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             java.math.BigDecimal total = java.math.BigDecimal.ZERO;
             for (PreparedShot shot : prepared)
             {
-                MediaVideoGenerateRequest media = buildVideoMediaRequest(
-                        shot.storyboard, shot, modelConfig, userId, aspectRatio, resolution,
-                        shot.durationSeconds, generateAudio, Map.of());
-                // 与报价和正式提交共用素材及计费维度，不能漏掉参考视频等 SKU 条件。
-                PreparedMediaBillingInput billing = mediaBillingQuotePreparer.prepareVideoBilling(media);
-                BillingCalcResult calc = billingPreHoldCalculationService.calculate(
-                        billing.modelConfig(), billing.billingInput());
-                if (Objects.isNull(calc) || !calc.isMatched() || Objects.isNull(calc.getAmount()))
+                for (Segment segment : StoryboardLongVideoPlanner.plan(
+                        shot.finalPrompt, shot.durationSeconds, modelConfig))
                 {
-                    // 任一镜头无法准确预估时整批放行，由媒体任务统一冻结硬校验
-                    return;
+                    MediaVideoGenerateRequest media = buildVideoMediaRequest(
+                            shot.storyboard, segment.prompt(), shot.referenceImages, shot.baseImageUrl,
+                            shot.lastFrameImageUrl, shot.referenceAudios, shot.referenceVideos,
+                            shot.providerExtraOptions, modelConfig, userId, aspectRatio, resolution,
+                            segment.seconds(), generateAudio, Map.of());
+                    // 与报价和正式提交共用素材及计费维度，不能漏掉参考视频等 SKU 条件。
+                    PreparedMediaBillingInput billing = mediaBillingQuotePreparer.prepareVideoBilling(media);
+                    BillingCalcResult calc = billingPreHoldCalculationService.calculate(
+                            billing.modelConfig(), billing.billingInput());
+                    if (Objects.isNull(calc) || !calc.isMatched() || Objects.isNull(calc.getAmount()))
+                    {
+                        // 任一镜头无法准确预估时整批放行，由媒体任务统一冻结硬校验
+                        return;
+                    }
+                    total = total.add(calc.getAmount()
+                            .multiply(java.math.BigDecimal.valueOf(Math.max(shot.takeCount, 1))));
                 }
-                total = total.add(calc.getAmount()
-                        .multiply(java.math.BigDecimal.valueOf(Math.max(shot.takeCount, 1))));
             }
             accountUpdateService.precheckBalance(userId, total);
         }
@@ -3113,12 +3812,30 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             }
             Integer jobDurationSeconds = Boolean.TRUE.equals(modelConfig.getSupportsDuration())
                     ? ps.durationSeconds : null;
-            shotJobs.add(new VideoGenJob(taskId, userId, ps.storyboard, modelCode, modelId, modelConfig,
-                    ps.finalPrompt, ps.rawVideoPrompt, ps.referenceImages, ps.baseImageUrl, ps.takeCount,
-                    aspectRatio, resolution, jobDurationSeconds, generateAudio, userInputText, ps.userVideoPromptInput,
-                    bizSeqBase, takeSlots, lock.key, lock.token,
-                    genType, ps.lastFrameImageUrl, ps.firstImageRecordId, ps.lastImageRecordId,
-                    ps.referenceAudios, ps.referenceVideos, ps.providerExtraOptions, overwriteExistingFinal));
+            List<Segment> segments = StoryboardLongVideoPlanner.plan(
+                    ps.finalPrompt, jobDurationSeconds, modelConfig);
+            if (segments.size() == 1)
+            {
+                shotJobs.add(new VideoGenJob(taskId, userId, ps.storyboard, modelCode, modelId, modelConfig,
+                        ps.finalPrompt, ps.rawVideoPrompt, ps.referenceImages, ps.baseImageUrl, ps.takeCount,
+                        aspectRatio, resolution, jobDurationSeconds, generateAudio, userInputText, ps.userVideoPromptInput,
+                        bizSeqBase, takeSlots, lock.key, lock.token,
+                        genType, ps.lastFrameImageUrl, ps.firstImageRecordId, ps.lastImageRecordId,
+                        ps.referenceAudios, ps.referenceVideos, ps.providerExtraOptions, overwriteExistingFinal,
+                        false, 0, 1, jobDurationSeconds, ps.finalPrompt));
+                continue;
+            }
+            for (Segment segment : segments)
+            {
+                long segmentBizSeqBase = Math.addExact(bizSeqBase, (long) segment.index() * 100L);
+                shotJobs.add(new VideoGenJob(taskId, userId, ps.storyboard, modelCode, modelId, modelConfig,
+                        segment.prompt(), ps.rawVideoPrompt, ps.referenceImages, ps.baseImageUrl, 1,
+                        aspectRatio, resolution, segment.seconds(), generateAudio, userInputText, ps.userVideoPromptInput,
+                        segmentBizSeqBase, List.of(0), lock.key, lock.token,
+                        GEN_TYPE_VIDEO_SEGMENT, ps.lastFrameImageUrl, ps.firstImageRecordId, ps.lastImageRecordId,
+                        ps.referenceAudios, ps.referenceVideos, ps.providerExtraOptions, false,
+                        true, segment.index(), segment.count(), jobDurationSeconds, ps.finalPrompt));
+            }
         }
         VideoBatchJob batchJob = new VideoBatchJob(taskId, userId, modelCode, perShotCount, totalShots,
                 seedSuccessCount + newSubtasks, seedSuccessCount, runNo, shotJobs, new ArrayList<>(heldLocks),
@@ -3181,7 +3898,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
      *  含 bizSeq：下发媒体层的确定性 bizTaskId（= bizSeqBase + takeIndex），也是父子任务收尾关联键。 */
     private String buildShotGenParamsJson(Long parentTaskId, Long storyboardId, String modelCode, String aspectRatio,
             String resolution, Integer durationSeconds, int takeCount, Boolean generateAudio, String userInputText,
-            String videoPromptInput, int takeIndex, long bizSeq)
+            String videoPromptInput, int takeIndex, long bizSeq, VideoGenJob job)
     {
         Map<String, Object> genParamsMap = new LinkedHashMap<>();
         genParamsMap.put("parentTaskId", parentTaskId);
@@ -3197,6 +3914,14 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         genParamsMap.put("generateAudio", generateAudio);
         genParamsMap.put("userInputText", userInputText);
         genParamsMap.put("videoPromptInput", videoPromptInput);
+        if (job.longSegment)
+        {
+            genParamsMap.put("longSegment", true);
+            genParamsMap.put("segmentIndex", job.segmentIndex);
+            genParamsMap.put("segmentCount", job.segmentCount);
+            genParamsMap.put("totalDurationSeconds", job.totalDurationSeconds);
+            genParamsMap.put("sourcePrompt", job.sourcePrompt);
+        }
         try
         {
             return OBJECT_MAPPER.writeValueAsString(genParamsMap);
@@ -3262,7 +3987,7 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
                     long bizSeq = Math.addExact(shot.bizSeqBase, slot);
                     String genParamsJson = buildShotGenParamsJson(shot.taskId, shot.storyboard.getId(),
                             shot.modelCode, shot.aspectRatio, shot.resolution, shot.durationSeconds, shot.videoCount,
-                            shot.generateAudio, shot.userInputText, shot.userVideoPromptInput, slot, bizSeq);
+                            shot.generateAudio, shot.userInputText, shot.userVideoPromptInput, slot, bizSeq, shot);
                     try
                     {
                         String reused = reconcileExistingMediaUrl(bizSeq);
@@ -4284,6 +5009,11 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         ctx.put("genParams", genParamsJson);
         ctx.put("bizSeq", bizSeq);
         ctx.put("overwriteExistingFinal", job.overwriteExistingFinal);
+        ctx.put("longSegment", job.longSegment);
+        ctx.put("segmentIndex", job.segmentIndex);
+        ctx.put("segmentCount", job.segmentCount);
+        ctx.put("totalDurationSeconds", job.totalDurationSeconds);
+        ctx.put("sourcePrompt", job.sourcePrompt);
         ctx.put("executionTraceId", dispatchToken);
         MediaVideoGenerateRequest videoRequest = buildVideoMediaRequest(
                 storyboard, job.finalPrompt, job.referenceImages, job.baseImageUrl,
@@ -4489,6 +5219,11 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         final Map<String, Object> providerExtraOptions;
         /** true=批量生成保持自动覆盖；false=单个生成仅在尚无主视频时自动设置。 */
         final boolean overwriteExistingFinal;
+        final boolean longSegment;
+        final int segmentIndex;
+        final int segmentCount;
+        final Integer totalDurationSeconds;
+        final String sourcePrompt;
 
         VideoGenJob(Long taskId, Long userId, AidStoryboard storyboard,
                     String modelCode, Long modelId, AiModelConfigVo modelConfig,
@@ -4500,7 +5235,8 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
                      String genType, String lastFrameImageUrl, Long firstImageRecordId, Long lastImageRecordId,
                      List<ReferenceAudioInput> referenceAudios, List<ReferenceVideoInput> referenceVideos,
                      Map<String, Object> providerExtraOptions,
-                    boolean overwriteExistingFinal)
+                    boolean overwriteExistingFinal, boolean longSegment, int segmentIndex, int segmentCount,
+                    Integer totalDurationSeconds, String sourcePrompt)
         {
             this.taskId = taskId;
             this.userId = userId;
@@ -4541,6 +5277,11 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
                     ? java.util.Collections.emptyMap()
                     : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(providerExtraOptions));
             this.overwriteExistingFinal = overwriteExistingFinal;
+            this.longSegment = longSegment;
+            this.segmentIndex = segmentIndex;
+            this.segmentCount = segmentCount;
+            this.totalDurationSeconds = totalDurationSeconds;
+            this.sourcePrompt = sourcePrompt;
         }
     }
 
@@ -4630,10 +5371,16 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             // DIRECT 内联与事件扇入并发竞态：唯一键冲突说明同一 take 已落库，幂等忽略
             log.info("分镜出片 gen_record 已存在(biz_seq 唯一键冲突,幂等忽略): bizSeq={}, storyboardId={}",
                     bizSeq, storyboard.getId());
-            markExistingVideoRecordAsFinal(bizSeq, job.userId, job.overwriteExistingFinal);
+            if (!job.longSegment)
+            {
+                markExistingVideoRecordAsFinal(bizSeq, job.userId, job.overwriteExistingFinal);
+            }
             return null;
         }
-        markStoryboardFinalVideo(storyboard.getId(), record.getId(), job.userId, job.overwriteExistingFinal);
+        if (!job.longSegment)
+        {
+            markStoryboardFinalVideo(storyboard.getId(), record.getId(), job.userId, job.overwriteExistingFinal);
+        }
         return record.getId();
     }
     /** 注入 aid_media_task.request_json.options 的单一命名空间上下文键。 */
@@ -4651,8 +5398,11 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         {
             syncSettledVideoCost(existing.getId(), bizSeq, shot.userId, videoUrl);
             Long recordUserId = Objects.nonNull(existing.getUserId()) ? existing.getUserId() : shot.userId;
-            markStoryboardFinalVideo(existing.getStoryboardId(), existing.getId(), recordUserId,
-                    shot.overwriteExistingFinal);
+            if (!shot.longSegment)
+            {
+                markStoryboardFinalVideo(existing.getStoryboardId(), existing.getId(), recordUserId,
+                        shot.overwriteExistingFinal);
+            }
             return;
         }
         persistGenRecord(shot, bizSeq, videoUrl, genParamsJson);
@@ -4761,6 +5511,107 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         }
     }
 
+    @Override
+    public void onLongVideoComposeTaskTerminal(Long mediaTaskId, boolean success, String ossUrl)
+    {
+        AidMediaTask composeTask = aidMediaTaskMapper.selectById(mediaTaskId);
+        if (composeTask == null || !LONG_COMPOSE_CALLBACK.equals(composeTask.getCallbackCategory())
+                || composeTask.getParentTaskId() == null)
+        {
+            return;
+        }
+        Long parentTaskId = composeTask.getParentTaskId();
+        try
+        {
+            batchParentSubmissionGuard.execute(parentTaskId, () -> {
+                if (!success || StrUtil.isBlank(ossUrl))
+                {
+                    fanInSupport.incrFail(parentTaskId, "视频合并失败");
+                    finalizeVideoBatchIfDone(parentTaskId);
+                    return null;
+                }
+                persistLongVideoResult(composeTask, ossUrl);
+                finalizeVideoBatchIfDone(parentTaskId);
+                return null;
+            });
+        }
+        catch (Exception e)
+        {
+            log.error("长视频合并结果回写失败: mediaTaskId={}, parentTaskId={}",
+                    mediaTaskId, parentTaskId, e);
+        }
+    }
+
+    private void persistLongVideoResult(AidMediaTask composeTask, String ossUrl)
+    {
+        Long parentTaskId = composeTask.getParentTaskId();
+        Long storyboardId = composeTask.getCallbackRecordId();
+        if (storyboardId == null)
+        {
+            throw new IllegalStateException("长视频合并缺少分镜标识");
+        }
+        long bizSeq = Math.addExact(
+                Math.multiplyExact(parentTaskId, MediaGenFanInSupport.BIZ_SEQ_PARENT_FACTOR),
+                LONG_COMPOSE_BIZ_OFFSET);
+        AidGenRecord existed = loadGenRecordByBizSeq(bizSeq);
+        if (existed != null)
+        {
+            markStoryboardFinalVideo(storyboardId, existed.getId(), composeTask.getUserId(), true);
+            return;
+        }
+        List<AidGenRecord> parentRecords = loadSucceededRecordsByParentTask(parentTaskId, List.of(storyboardId));
+        List<LongSegmentRecord> segments = parentRecords.stream()
+                .map(this::parseLongSegmentRecord).filter(Objects::nonNull)
+                .sorted(java.util.Comparator.comparingInt(LongSegmentRecord::index)).toList();
+        if (segments.isEmpty())
+        {
+            throw new IllegalStateException("长视频片段记录缺失");
+        }
+        LongSegmentRecord first = segments.get(0);
+        AidGenRecord record = new AidGenRecord();
+        record.setUserId(composeTask.getUserId());
+        record.setProjectId(composeTask.getProjectId());
+        record.setEpisodeId(composeTask.getEpisodeId());
+        record.setStoryboardId(storyboardId);
+        record.setGenType(GEN_TYPE_I2V);
+        record.setModelId(first.record().getModelId());
+        record.setPromptText(first.sourcePrompt());
+        record.setUserInputText(first.record().getUserInputText());
+        record.setFileUrl(ossUrl);
+        long totalSeconds = composeTask.getOutputDurationSeconds() != null
+                ? composeTask.getOutputDurationSeconds()
+                : segments.stream().mapToLong(LongSegmentRecord::seconds).sum();
+        record.setVideoDuration(totalSeconds);
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("parentTaskId", parentTaskId);
+        params.put("longVideoMerged", true);
+        params.put("segmentCount", segments.size());
+        params.put("segmentRecordIds", segments.stream().map(item -> item.record().getId()).toList());
+        params.put("durationSeconds", totalSeconds);
+        try { record.setGenParams(OBJECT_MAPPER.writeValueAsString(params)); }
+        catch (Exception ignored) { record.setGenParams("{\"longVideoMerged\":true}"); }
+        record.setBizSeq(bizSeq);
+        record.setStatus(1);
+        record.setIsSelected(SELECTED_YES);
+        record.setDelFlag(DEL_FLAG_NORMAL);
+        record.setCreateTime(DateUtils.getNowDate());
+        record.setCreateBy(String.valueOf(composeTask.getUserId()));
+        try
+        {
+            aidGenRecordService.save(record);
+        }
+        catch (DuplicateKeyException duplicate)
+        {
+            AidGenRecord concurrent = loadGenRecordByBizSeq(bizSeq);
+            if (concurrent != null)
+            {
+                markStoryboardFinalVideo(storyboardId, concurrent.getId(), composeTask.getUserId(), true);
+            }
+            return;
+        }
+        markStoryboardFinalVideo(storyboardId, record.getId(), composeTask.getUserId(), true);
+    }
+
     /** 从 request_json.options.sbzVideoGenCtx 反序列化上下文，幂等落 gen_record。 */
     private boolean persistGenRecordFromCtx(AidMediaTask mt, long bizSeq, String ossUrl)
     {
@@ -4773,8 +5624,11 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             if (CollectionUtil.isNotEmpty(ctx))
             {
                 Long recordUserId = Objects.nonNull(existing.getUserId()) ? existing.getUserId() : mt.getUserId();
-                markStoryboardFinalVideo(existing.getStoryboardId(), existing.getId(), recordUserId,
-                        resolveOverwriteExistingFinal(ctx));
+                if (!Boolean.TRUE.equals(ctx.get("longSegment")))
+                {
+                    markStoryboardFinalVideo(existing.getStoryboardId(), existing.getId(), recordUserId,
+                            resolveOverwriteExistingFinal(ctx));
+                }
             }
             return true; // 幂等：已落库时不再依赖 request_json 上下文，兼容上下文压缩后的重复事件
         }
@@ -4826,10 +5680,16 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             // DIRECT 内联与事件扇入并发竞态：唯一键冲突说明同一 take 已落库，幂等忽略
             log.info("分镜出片事件落库 gen_record 已存在(biz_seq 唯一键冲突,幂等忽略): bizSeq={}, storyboardId={}",
                     bizSeq, storyboardId);
-            markExistingVideoRecordAsFinal(bizSeq, mt.getUserId(), overwriteExistingFinal);
+            if (!Boolean.TRUE.equals(ctx.get("longSegment")))
+            {
+                markExistingVideoRecordAsFinal(bizSeq, mt.getUserId(), overwriteExistingFinal);
+            }
             return true;
         }
-        markStoryboardFinalVideo(storyboardId, record.getId(), mt.getUserId(), overwriteExistingFinal);
+        if (!Boolean.TRUE.equals(ctx.get("longSegment")))
+        {
+            markStoryboardFinalVideo(storyboardId, record.getId(), mt.getUserId(), overwriteExistingFinal);
+        }
         return true;
     }
 
@@ -4949,6 +5809,138 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         return !(value instanceof Boolean flag) || flag;
     }
 
+    /**
+     * Long-shot fan-in: after all hidden generation segments succeed, submit exactly one local FFmpeg
+     * concat task. The parent total includes this compose slot, so it cannot finish before the merged
+     * MP4 (including each segment's native audio) has been persisted.
+     */
+    private boolean submitLongVideoComposeIfReady(AidExtractTask parent, List<AidGenRecord> succeeded, int total)
+    {
+        if (parent == null || CollectionUtil.isEmpty(succeeded))
+        {
+            return false;
+        }
+        List<LongSegmentRecord> segments = new ArrayList<>();
+        for (AidGenRecord record : succeeded)
+        {
+            LongSegmentRecord parsed = parseLongSegmentRecord(record);
+            if (parsed != null)
+            {
+                segments.add(parsed);
+            }
+        }
+        if (segments.isEmpty())
+        {
+            return false;
+        }
+        segments.sort(java.util.Comparator.comparingInt(LongSegmentRecord::index));
+        int expected = segments.get(0).count();
+        Long storyboardId = segments.get(0).record().getStoryboardId();
+        boolean complete = expected > 1 && segments.size() == expected && total == expected + 1
+                && segments.stream().allMatch(item -> item.count() == expected
+                        && Objects.equals(storyboardId, item.record().getStoryboardId()));
+        if (!complete)
+        {
+            return false;
+        }
+        String batchId = longComposeBatchId(parent.getId(), storyboardId);
+        Long existing = aidMediaTaskMapper.selectCount(Wrappers.<AidMediaTask>lambdaQuery()
+                .eq(AidMediaTask::getComposeBatchId, batchId));
+        if (existing != null && existing > 0)
+        {
+            return true;
+        }
+
+        ComposeGroup group = new ComposeGroup();
+        group.setVideoUrls(segments.stream()
+                .map(item -> mediaUrlResolver.toFullUrl(item.record().getFileUrl())).toList());
+        group.setVideoDurations(segments.stream()
+                .map(item -> item.seconds().doubleValue()).toList());
+
+        ComposeCommand command = new ComposeCommand();
+        command.setGroups(List.of(group));
+        command.setAlignStrategy("VIDEO");
+        command.setResolution(resolveComposeResolution(parent.getInputSnapshot()));
+        command.setUserId(parent.getUserId());
+        command.setProjectId(parent.getProjectId());
+        command.setEpisodeId(parent.getEpisodeId());
+        command.setCallbackCategory(LONG_COMPOSE_CALLBACK);
+        command.setCallbackRecordId(storyboardId);
+        command.setComposeBatchId(batchId);
+        command.setParentTaskId(parent.getId());
+        try
+        {
+            ComposeSubmitResult submit = coreComposeService.compose(command);
+            log.info("长视频片段已齐，提交自动合并: parentTaskId={}, composeTaskId={}, segments={}",
+                    parent.getId(), submit.getMediaTaskId(), expected);
+        }
+        catch (Exception e)
+        {
+            log.error("长视频自动合并提交失败: parentTaskId={}", parent.getId(), e);
+            fanInSupport.incrFail(parent.getId(), "视频合并失败");
+            finalizeVideoBatchIfDone(parent.getId());
+        }
+        return true;
+    }
+
+    private LongSegmentRecord parseLongSegmentRecord(AidGenRecord record)
+    {
+        if (record == null || !GEN_TYPE_VIDEO_SEGMENT.equals(record.getGenType())
+                || StrUtil.isBlank(record.getGenParams()))
+        {
+            return null;
+        }
+        try
+        {
+            JsonNode node = OBJECT_MAPPER.readTree(record.getGenParams());
+            if (!node.path("longSegment").asBoolean(false))
+            {
+                return null;
+            }
+            int index = node.path("segmentIndex").asInt(-1);
+            int count = node.path("segmentCount").asInt(0);
+            int seconds = node.path("durationSeconds").asInt(0);
+            if (index < 0 || count < 2 || seconds < StoryboardLongVideoPlanner.MIN_SEGMENT_SECONDS)
+            {
+                return null;
+            }
+            return new LongSegmentRecord(record, index, count, seconds,
+                    node.path("totalDurationSeconds").asInt(0),
+                    node.path("sourcePrompt").asText(null));
+        }
+        catch (Exception e)
+        {
+            log.warn("长视频片段元数据解析失败: recordId={}", record.getId());
+            return null;
+        }
+    }
+
+    private String resolveComposeResolution(String inputSnapshot)
+    {
+        try
+        {
+            String value = OBJECT_MAPPER.readTree(inputSnapshot).path("resolution").asText("")
+                    .trim().toUpperCase(java.util.Locale.ROOT);
+            if ("2K".equals(value) || "4K".equals(value)) { return value; }
+            if ("1080P".equals(value) || "960P".equals(value) || "768P".equals(value)) { return "FHD"; }
+            return "HD";
+        }
+        catch (Exception ignore)
+        {
+            return "HD";
+        }
+    }
+
+    private String longComposeBatchId(Long parentTaskId, Long storyboardId)
+    {
+        return LONG_COMPOSE_BATCH_PREFIX + parentTaskId + "_" + storyboardId;
+    }
+
+    private record LongSegmentRecord(AidGenRecord record, int index, int count, Integer seconds,
+                                     int totalSeconds, String sourcePrompt)
+    {
+    }
+
     /** 解析 request_json → options.sbzVideoGenCtx（Map）。 */
     @SuppressWarnings("unchecked")
     private Map<String, Object> extractCtxFromMediaTask(AidMediaTask mt)
@@ -4980,8 +5972,21 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
         int successCount = succ.size();
         int failCount = fanInSupport.getFailCount(taskId);
         int processed = successCount + failCount;
+        int longSegmentCount = resolveLongVideoSegmentCount(task.getInputSnapshot());
+        if (longSegmentCount > 1 && failCount > 0 && processed == longSegmentCount && processed < total)
+        {
+            // 片段已有失败时不会再创建合并任务；把预留的合并槽同步记为失败，避免父任务永久等待。
+            fanInSupport.incrFail(taskId, "片段生成失败，已跳过视频合并");
+            failCount = fanInSupport.getFailCount(taskId);
+            processed = successCount + failCount;
+        }
         if (processed < total)
         {
+            if (failCount == 0 && submitLongVideoComposeIfReady(task, succ, total))
+            {
+                pushBatchProgress(taskId, total, processed, successCount, failCount);
+                return;
+            }
             // 未凑齐终态：推一次「已处理 X/N」扇入进度，异步等待期前端不再长时间无事件
             pushBatchProgress(taskId, total, processed, successCount, failCount);
             return;
@@ -5029,6 +6034,23 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             try { assetExtractService.clearCancelFlag(taskId, task.getBillingTraceId()); } catch (Exception ignore) { /* ignore */ }
             try { assetExtractService.releaseTaskSlots(taskId, task.getBillingTraceId()); } catch (Exception ignore) { /* ignore */ }
             fanInSupport.cleanup(taskId);
+        }
+    }
+
+    private int resolveLongVideoSegmentCount(String inputSnapshot)
+    {
+        if (StrUtil.isBlank(inputSnapshot))
+        {
+            return 0;
+        }
+        try
+        {
+            return Math.max(0, OBJECT_MAPPER.readTree(inputSnapshot)
+                    .path("longVideoSegmentCount").asInt(0));
+        }
+        catch (Exception ignored)
+        {
+            return 0;
         }
     }
 
@@ -5096,7 +6118,10 @@ public class StoryboardVideoGenerationServiceImpl implements IStoryboardVideoGen
             return aidGenRecordService.list(
                     Wrappers.<AidGenRecord>lambdaQuery()
                             .select(AidGenRecord::getId, AidGenRecord::getStoryboardId,
-                                    AidGenRecord::getFileUrl, AidGenRecord::getGenParams, AidGenRecord::getCreateTime)
+                                    AidGenRecord::getFileUrl, AidGenRecord::getGenParams,
+                                    AidGenRecord::getGenType, AidGenRecord::getPromptText,
+                                    AidGenRecord::getUserInputText, AidGenRecord::getVideoDuration,
+                                    AidGenRecord::getModelId, AidGenRecord::getCreateTime)
                             .in(AidGenRecord::getStoryboardId, storyboardIds)
                             .eq(AidGenRecord::getStatus, 1)
                             .eq(AidGenRecord::getDelFlag, DEL_FLAG_NORMAL)

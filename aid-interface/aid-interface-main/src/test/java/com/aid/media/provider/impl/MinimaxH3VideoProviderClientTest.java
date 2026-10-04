@@ -86,8 +86,44 @@ class MinimaxH3VideoProviderClientTest {
         MinimaxH3VideoRequestBuilder.sanitizePrompt(config, request);
         Map<String, Object> body = MinimaxH3VideoRequestBuilder.buildSubmissionBody(config, request);
 
-        assertEquals("参考图片1生成镜头", request.getPrompt());
-        assertEquals("参考图片1生成镜头", content(body).get(0).get("text"));
+        assertEquals("参考<Picture 1>生成镜头", request.getPrompt());
+        assertEquals("参考<Picture 1>生成镜头", content(body).get(0).get("text"));
+    }
+
+    @Test
+    void referencePromptUsesOfficialH3PictureVideoAndAudioTags() {
+        AiModelConfigVo config = config(MinimaxH3Constants.MODEL_REFERENCE, 9);
+        MediaVideoGenerateRequest request = request(null, new LinkedHashMap<>(Map.of(
+            "images", List.of("https://cdn.test/character.png"),
+            "referenceVideos", List.of("https://cdn.test/action.mp4"))));
+        ReferenceAudioInput audio = new ReferenceAudioInput();
+        audio.setSampleUrl("https://cdn.test/voice.mp3");
+        request.setReferenceAudios(List.of(audio));
+        request.setPrompt("人物参考@图片1[角色]，动作参考@视频1[动作]，声音参考@音频1[音频-角色]");
+
+        MinimaxH3VideoRequestBuilder.sanitizePrompt(config, request);
+
+        assertEquals("人物参考<Picture 1>，动作参考<Video 1>，声音参考<Audio 1>", request.getPrompt());
+    }
+
+    @Test
+    void faceSwapUsesExplicitOperationAndStrictInputs() {
+        MediaVideoGenerateRequest request = request(null, new LinkedHashMap<>(Map.of(
+            "images", List.of("https://cdn.test/source-face.png"),
+            "referenceVideos", List.of("https://cdn.test/target.mp4"),
+            "face_swap", true)));
+
+        Map<String, Object> result = body(MinimaxH3Constants.MODEL_REFERENCE, request, 3);
+
+        assertEquals("face_swap", result.get("operation"));
+        assertEquals(List.of("text", "image_url", "video_url"),
+            content(result).stream().map(item -> String.valueOf(item.get("type"))).toList());
+
+        MediaVideoGenerateRequest missingFace = request(null, new LinkedHashMap<>(Map.of(
+            "referenceVideos", List.of("https://cdn.test/target.mp4"),
+            "face_swap", true)));
+        assertThrows(ServiceException.class,
+            () -> body(MinimaxH3Constants.MODEL_REFERENCE, missingFace, 3));
     }
 
     @Test
@@ -224,6 +260,20 @@ class MinimaxH3VideoProviderClientTest {
             "t7", "image_to_video");
         assertEquals("SUCCEEDED", unifiedFirstFrame.getStatus());
         assertEquals(1, unifiedFirstFrame.getInputImageCount());
+    }
+
+    @Test
+    void mapsLocalGpuOomToActionableSafeMessage() {
+        ProviderTaskResult result = MinimaxH3VideoProviderClient.parseQueryResponse(200,
+            "{\"task\":{\"id\":\"oom-1\",\"model\":\"MiniMax-H3\","
+                + "\"task_type\":\"generation\",\"modality\":\"video\",\"status\":\"failed\","
+                + "\"error\":{\"code\":\"GPU_OUT_OF_MEMORY\","
+                + "\"message\":\"GPU显存不足，请缩短至10秒以内、降低分辨率或拆分镜头后重试\"}}}",
+            "oom-1", MinimaxH3Constants.MODEL_I2V_FIRST);
+
+        assertEquals("FAILED", result.getStatus());
+        assertEquals("GPU显存不足，请缩短或拆分镜头后重试", result.getErrorMessage());
+        assertEquals(Boolean.TRUE, result.getTerminalConfirmed());
     }
 
     @SuppressWarnings("unchecked")

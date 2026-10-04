@@ -186,6 +186,13 @@ public class MinimaxH3VideoProviderClient implements VideoProviderClient {
             || normalized.contains("policy") || normalized.contains("审核")) {
             return "生成内容未通过安全校验";
         }
+        if (normalized.contains("gpu_out_of_memory") || normalized.contains("out of memory")
+            || normalized.contains("显存不足")) {
+            return "GPU显存不足，请缩短或拆分镜头后重试";
+        }
+        if (normalized.contains("vae_decode_incompatible") || normalized.contains("vae分块解码不兼容")) {
+            return "VAE解码不兼容，请切换工作流后重试";
+        }
         return "上游任务执行失败";
     }
 

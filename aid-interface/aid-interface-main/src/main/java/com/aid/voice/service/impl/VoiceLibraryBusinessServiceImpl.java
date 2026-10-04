@@ -34,6 +34,7 @@ import com.aid.voice.dto.VoiceLibraryUpsertRequest;
 import com.aid.voice.service.IVoiceLibraryBusinessService;
 import com.aid.voice.service.IVoiceTagBusinessService;
 import com.aid.voice.util.VoiceEmotionCapability;
+import com.aid.voice.util.VoiceLibraryOwnership;
 import com.aid.voice.vo.VoiceEnumItemVO;
 import com.aid.voice.vo.VoiceLibraryVO;
 import com.aid.voice.vo.VoiceTagBundleVO;
@@ -99,13 +100,19 @@ public class VoiceLibraryBusinessServiceImpl implements IVoiceLibraryBusinessSer
     @Override
     public IPage<VoiceLibraryVO> listForAdmin(VoiceLibraryListRequest request)
     {
-        return listInternal(request, false);
+        return listInternal(request, false, null);
     }
 
     @Override
     public IPage<VoiceLibraryVO> listForClient(VoiceLibraryListRequest request)
     {
-        return listInternal(request, true);
+        return listInternal(request, true, null);
+    }
+
+    @Override
+    public IPage<VoiceLibraryVO> listForClient(VoiceLibraryListRequest request, Long userId)
+    {
+        return listInternal(request, true, userId);
     }
 
     @Override
@@ -281,7 +288,7 @@ public class VoiceLibraryBusinessServiceImpl implements IVoiceLibraryBusinessSer
         bundle.setEnums(buildEnumsMap());
         return bundle;
     }
-    private IPage<VoiceLibraryVO> listInternal(VoiceLibraryListRequest request, boolean clientMode)
+    private IPage<VoiceLibraryVO> listInternal(VoiceLibraryListRequest request, boolean clientMode, Long userId)
     {
         VoiceLibraryListRequest req = Objects.isNull(request) ? new VoiceLibraryListRequest() : request;
         int pageNum = Objects.isNull(req.getPageNum()) || req.getPageNum() < 1 ? DEFAULT_PAGE_NUM : req.getPageNum();
@@ -324,6 +331,12 @@ public class VoiceLibraryBusinessServiceImpl implements IVoiceLibraryBusinessSer
                 return emptyPage;
             }
             wrapper.in(AidAiVoiceLibrary::getModelId, visibleModelIds);
+            String owner = userId == null ? null : VoiceLibraryOwnership.owner(userId);
+            wrapper.and(q -> {
+                q.isNull(AidAiVoiceLibrary::getCreateBy)
+                        .or().notLikeRight(AidAiVoiceLibrary::getCreateBy, "user:");
+                if (owner != null) q.or().eq(AidAiVoiceLibrary::getCreateBy, owner);
+            });
         }
         else
         {

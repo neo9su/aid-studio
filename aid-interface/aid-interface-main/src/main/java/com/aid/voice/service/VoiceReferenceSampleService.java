@@ -9,6 +9,7 @@ import com.aid.common.exception.ServiceException;
 import com.aid.domain.vo.AiModelConfigVo;
 import com.aid.media.dto.MediaAudioGenerateRequest;
 import com.aid.media.util.TrustedMediaProbe;
+import com.aid.voice.util.VoiceLibraryOwnership;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,9 @@ public class VoiceReferenceSampleService {
                     .eq(AidAiVoiceLibrary::getVoiceCode, request.getVoiceCode()).eq(AidAiVoiceLibrary::getStatus, "0")
                     .eq(AidAiVoiceLibrary::getDelFlag, "0").last("limit 1"), false);
             if (voice == null || voice.getOfflineTime() != null && !voice.getOfflineTime().after(new Date())) {
+                throw new ServiceException("参考音色不可用");
+            }
+            if (!VoiceLibraryOwnership.canUse(voice, request.getUserId())) {
                 throw new ServiceException("参考音色不可用");
             }
             source = voice.getSampleUrl();
@@ -91,7 +95,8 @@ public class VoiceReferenceSampleService {
     }
 
     public static boolean isReferenceModel(AiModelConfigVo config) {
-        return "tokendance".equalsIgnoreCase(config.getProviderCode())
+        return com.aid.media.provider.impl.QwenTtsProviderClient.PROTOCOL.equalsIgnoreCase(config.getProtocol())
+                || "tokendance".equalsIgnoreCase(config.getProviderCode())
                 && "tokendance:openai:chat-completions".equals(config.getProtocol())
                 && "mimo-v2.5-tts-voiceclone".equals(config.getRealModelCode());
     }

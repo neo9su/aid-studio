@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UserModelListItem } from '~/types/business-api'
-import { resolveImageGenParamsFromAgentDefaults } from './modelCapability'
+import { buildDurationSelectOptions, parseModelCapability, resolveImageGenParamsFromAgentDefaults } from './modelCapability'
 
 const imageModel = {
   modelCode: 'image-model',
@@ -29,5 +29,27 @@ describe('resolveImageGenParamsFromAgentDefaults', () => {
         imageModel
       )
     ).toEqual({ resolution: '2k', aspectRatio: '1:1' })
+  })
+})
+
+describe('parseModelCapability long video options', () => {
+  it('extends Agnes and H3 durations to 24 seconds for automatic splitting', () => {
+    for (const modelCode of ['agnes-video-2.5-flash', 'minimax-h3-t2v']) {
+      const snapshot = parseModelCapability({
+        modelCode,
+        capability: { durationOptions: [5, 8, 12] }
+      } as UserModelListItem)
+      expect(snapshot.durationOptions.at(-1)).toBe(24)
+      expect(snapshot.durationOptions).toContain(13)
+      expect(buildDurationSelectOptions(snapshot).at(-1)?.label).toContain('自动分段合并')
+    }
+  })
+
+  it('does not extend unrelated video models', () => {
+    const snapshot = parseModelCapability({
+      modelCode: 'other-video',
+      capability: { durationOptions: [5, 8, 12] }
+    } as UserModelListItem)
+    expect(snapshot.durationOptions).toEqual([5, 8, 12])
   })
 })

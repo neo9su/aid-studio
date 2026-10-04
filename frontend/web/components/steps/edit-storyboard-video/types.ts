@@ -86,6 +86,13 @@ export type ReferenceImageItem = {
   name?: string
 }
 
+export type SubmittedVideoPromptSnapshot = {
+  prompt: string
+  submittedAt?: string
+  modelName?: string
+  recordId?: number
+}
+
 /**
  * 原 Vue setup() 单闭包按 UI 区块 / 逻辑内聚拆分后共享的运行时上下文。
  * 主组件创建 base 部分，各子 hook 把自己的 API Object.assign 进来（延迟绑定解环）。
@@ -107,6 +114,7 @@ export interface VideoModalBaseCtx {
   rightPanelLoading: Mirrored<boolean>
   videoGenerateTargetKey: Mirrored<string>
   videoGenerateProgressText: Mirrored<string>
+  videoGenerateProgressPercent: Mirrored<number | null>
   selectedVideoIdx: Mirrored<number>
   showStoryboardScriptModal: Mirrored<boolean>
   scriptEditorKey: Mirrored<number>
@@ -128,6 +136,8 @@ export interface VideoModalBaseCtx {
   edgeVideoPrompt: Mirrored<string>
   /** 首尾帧提示词按分镜本地缓存，与多参 videoPrompt 完全隔离（不从接口回落 videoPrompt） */
   edgeVideoPromptByStoryboardId: Mirrored<Record<string, string>>
+  /** 各分镜最近一次实际提交给视频模型的提示词快照。 */
+  submittedVideoPromptByStoryboardId: Mirrored<Record<string, SubmittedVideoPromptSnapshot>>
 
   // 图生视频 tab：九宫格 + 参考图 + 镜头运动 + 特殊拍摄手法
   referenceImages: Mirrored<ReferenceImageItem[]>
@@ -142,6 +152,8 @@ export interface VideoModalBaseCtx {
   isMultiParamSettingExpanded: Mirrored<boolean>
   activeMultiParamSettingKey: Mirrored<string | null>
   multiParamShootingTechnique: Mirrored<{ key: string; value: string } | null>
+  /** 精准换脸测试版；仅支持该 capability 的多参模型实际生效。 */
+  faceSwapEnabled: Mirrored<boolean>
 
   // 首尾帧生视频 tab
   isEdgeVideoSettingExpanded: Mirrored<boolean>
@@ -226,6 +238,7 @@ export interface VideoModalBaseCtx {
   currentStoryboardId: () => number | null
   scriptRowLabel: () => string
   currentSceneVideos: () => any[]
+  currentSceneVideoError: () => string
   projectCreationMode: () => string
   getActiveStoryboardPanel: () => StoryboardGeneratePanelHandle | null
   /** 分镜视频内点击脚本标题：关闭当前弹窗并跳转第 4 步分镜脚本列表 */

@@ -2,3 +2,84 @@
 @import './edit-storyboard-video-panel-title.css';
 @import './edit-storyboard-video-btn-set-storyboard.css';
 @import './edit-storyboard-video-setting-select-inline.css';
+
+.submitted-video-prompt {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid rgba(52, 211, 255, 0.3);
+  border-radius: 10px;
+  background: rgba(7, 17, 28, 0.72);
+}
+
+.submitted-video-prompt__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.submitted-video-prompt__header > div:first-child,
+.submitted-video-prompt__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.submitted-video-prompt__header strong {
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.submitted-video-prompt__header span,
+.submitted-video-prompt__meta {
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 12px;
+}
+
+.submitted-video-prompt__meta {
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.submitted-video-prompt pre {
+  max-height: 180px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.24);
+  color: rgba(255, 255, 255, 0.76);
+  font: inherit;
+  line-height: 1.65;
+}
+
+.submitted-video-prompt__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.face-swap-beta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(51, 211, 255, 0.28);
+  border-radius: 10px;
+  background: rgba(14, 116, 144, 0.12);
+}
+
+.face-swap-beta-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.face-swap-beta-row span {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 12px;
+}

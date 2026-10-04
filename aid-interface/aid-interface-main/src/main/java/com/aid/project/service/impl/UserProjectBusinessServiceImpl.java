@@ -46,6 +46,7 @@ import com.aid.enums.EpisodeStatusEnum;
 import com.aid.enums.GenModeEnum;
 import com.aid.enums.ProjectStatusEnum;
 import com.aid.enums.ProjectTypeEnum;
+import com.aid.enums.ProjectComplianceProfileEnum;
 import com.aid.enums.ScriptTypeEnum;
 import com.aid.project.dto.UserProjectCreateRequest;
 import com.aid.project.dto.UserProjectPublishRequest;
@@ -160,7 +161,8 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
         wrapper.select(AidComicProject::getId, AidComicProject::getUserId,
                 AidComicProject::getProjectName, AidComicProject::getProjectDesc,
                 AidComicProject::getPendingProjectName, AidComicProject::getPendingProjectDesc,
-                AidComicProject::getProjectType, AidComicProject::getCoverUrl,
+                AidComicProject::getProjectType, AidComicProject::getComplianceProfile,
+                AidComicProject::getCoverUrl,
                 AidComicProject::getPendingCoverUrl, AidComicProject::getAspectRatio,
                 AidComicProject::getScriptType, AidComicProject::getVideoStyleType,
                 AidComicProject::getVideoStyleValue, AidComicProject::getStyleSource,
@@ -213,8 +215,10 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
         // 查询字段精简：C端详情不读取隐藏风格快照，避免内部模板进入序列化上下文。
         wrapper.select(AidComicProject::getId, AidComicProject::getUserId,
                 AidComicProject::getProjectName, AidComicProject::getProjectDesc,
+                AidComicProject::getProjectOutline,
                 AidComicProject::getPendingProjectName, AidComicProject::getPendingProjectDesc,
-                AidComicProject::getProjectType, AidComicProject::getCoverUrl,
+                AidComicProject::getProjectType, AidComicProject::getComplianceProfile,
+                AidComicProject::getCoverUrl,
                 AidComicProject::getPendingCoverUrl, AidComicProject::getAspectRatio,
                 AidComicProject::getScriptType, AidComicProject::getVideoStyleType,
                 AidComicProject::getVideoStyleValue, AidComicProject::getStyleSource,
@@ -272,6 +276,24 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
         }
         if (StringUtils.isNotEmpty(defaultCreationMode) && CreationModeEnum.getByValue(defaultCreationMode) == null) {
             throw new RuntimeException("创作模式参数错误");
+        }
+    }
+
+    private String normalizeComplianceProfile(String value)
+    {
+        ProjectComplianceProfileEnum profile = ProjectComplianceProfileEnum.getByValue(value);
+        if (profile == null) {
+            throw new ServiceException("内容与发布模式参数错误");
+        }
+        return profile.getValue();
+    }
+
+    /** 私人自用项目不能进入公开审核/发布链路。 */
+    private void assertPublishableComplianceProfile(AidComicProject project)
+    {
+        if (Objects.equals(ProjectComplianceProfileEnum.PRIVATE_ADULT.getValue(),
+                project.getComplianceProfile())) {
+            throw new ServiceException("私人自用项目不可公开发布，请先在项目配置中选择发布地区");
         }
     }
 
@@ -391,6 +413,9 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
         project.setProjectName(request.getProjectName());
         project.setProjectDesc(request.getProjectDesc());
         project.setProjectType(request.getProjectType());
+        project.setComplianceProfile(StrUtil.isBlank(request.getComplianceProfile())
+                ? ProjectComplianceProfileEnum.PRIVATE_ADULT.getValue()
+                : normalizeComplianceProfile(request.getComplianceProfile()));
         project.setCoverUrl(request.getCoverUrl());
         project.setAspectRatio(request.getAspectRatio());
         project.setScriptType(request.getScriptType());
@@ -479,7 +504,8 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
         // 公开锁：公开期间展示信息（名称/介绍/封面）随时可改，内容参数字段仍锁定
         boolean touchingContentFields = request.getAspectRatio() != null || request.getScriptType() != null
                 || changingStyle
-                || request.getDefaultGenMode() != null || request.getDefaultCreationMode() != null;
+                || request.getDefaultGenMode() != null || request.getDefaultCreationMode() != null
+                || request.getProjectOutline() != null;
         if (touchingContentFields) {
             projectContentGuardService.assertProjectEditable(project);
         }
@@ -542,6 +568,18 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
         }
         if (!reviewMetadata && request.getProjectDesc() != null) {
             project.setProjectDesc(candidateProjectDesc);
+        }
+        if (request.getProjectOutline() != null) {
+            project.setProjectOutline(request.getProjectOutline().trim());
+        }
+        if (request.getComplianceProfile() != null) {
+            String complianceProfile = normalizeComplianceProfile(request.getComplianceProfile());
+            boolean changingComplianceProfile = !Objects.equals(
+                    complianceProfile, project.getComplianceProfile());
+            if (changingComplianceProfile && Objects.equals(IS_PUBLIC_YES, project.getIsPublic())) {
+                throw new ServiceException("请先取消公开后修改内容与发布模式");
+            }
+            project.setComplianceProfile(complianceProfile);
         }
         if (!reviewMetadata && request.getCoverUrl() != null) {
             project.setCoverUrl(candidateCoverUrl);
@@ -791,6 +829,7 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
             log.info("提交项目审核失败，项目不存在或无权限: projectId={}, userId={}", id, userId);
             throw new ServiceException("项目不存在");
         }
+        assertPublishableComplianceProfile(project);
         Integer beforeStatus = project.getStatus();
         // 校验当前状态是否允许提交审核
         if (Objects.equals(beforeStatus, ProjectStatusEnum.AUDITING.getValue())) {
@@ -855,6 +894,7 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
             log.info("公开项目失败，项目不存在或无权限: projectId={}, userId={}", id, userId);
             throw new ServiceException("项目不存在");
         }
+        assertPublishableComplianceProfile(project);
         // 公开前提：必须审核通过
         if (!Objects.equals(project.getStatus(), ProjectStatusEnum.AUDIT_PASSED.getValue())) {
             log.info("公开项目失败，项目未审核通过: projectId={}, status={}", id, project.getStatus());
@@ -1226,7 +1266,9 @@ public class UserProjectBusinessServiceImpl implements IUserProjectBusinessServi
                 // 创作者看到待审候选版本；公开查询服务仍读取已过审线上字段。
                 .projectName(effectiveProjectName(project))
                 .projectDesc(effectiveProjectDesc(project))
+                .projectOutline(project.getProjectOutline())
                 .projectType(project.getProjectType())
+                .complianceProfile(project.getComplianceProfile())
                 .coverUrl(effectiveProjectCoverUrl(project))
                 .aspectRatio(project.getAspectRatio())
                 .scriptType(project.getScriptType())

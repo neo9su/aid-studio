@@ -179,6 +179,17 @@ html.app-shell-create {
   font-size: 0.9rem;
 }
 
+.storyboard-step .storyboard-progress-bar {
+  width: 130px;
+  min-width: 90px;
+  margin: 0 0.15rem;
+}
+
+.storyboard-step .storyboard-progress-bar .ant-progress-text {
+  color: #d7e2ee;
+  font-size: 11px;
+}
+
 .storyboard-step .storyboard-toolbar-right {
   display: flex;
   align-items: center;

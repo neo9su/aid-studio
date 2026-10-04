@@ -470,6 +470,7 @@ export type CreditConsumeListResponse = ApiListEnvelopeData<CreditConsumeRecordR
 
 /** /api/user/project/list */
 export type UserProjectType = 'movie' | 'series'
+export type ProjectComplianceProfile = 'PRIVATE_ADULT' | 'CN_MAINLAND' | 'US_PLATFORMS'
 
 /** POST /api/public/project/video */
 export interface PublicProjectVideoListRequest {
@@ -544,7 +545,11 @@ export interface UserProjectRow {
   id: number
   projectName: string
   projectDesc?: string | null
+  /** 独立项目总纲/资产圣经，不计入分集 */
+  projectOutline?: string | null
   projectType: UserProjectType
+  /** 项目内容与发布合规模式 */
+  complianceProfile?: ProjectComplianceProfile | null
   coverUrl?: string | null
   aspectRatio?: string | null
   scriptType?: string | null
@@ -588,6 +593,7 @@ export interface UserProjectCreateRequest {
   projectName: string
   projectDesc?: string
   projectType: UserProjectType
+  complianceProfile: ProjectComplianceProfile
   coverUrl?: string
   aspectRatio?: string
   scriptType?: 'plot' | 'monologue'
@@ -652,6 +658,8 @@ export interface UserProjectUpdateRequest {
   id: number
   projectName?: string
   projectDesc?: string
+  projectOutline?: string
+  complianceProfile?: ProjectComplianceProfile
   coverUrl?: string
   aspectRatio?: string
   scriptType?: 'plot' | 'monologue'
@@ -912,6 +920,21 @@ export interface RoleVoiceBindingVO {
   overrideEmotion?: string | null
   offlineTime?: string | null
   offline?: boolean | null
+  referenceAudioId?: number | null
+  referenceAudioUrl?: string | null
+  referenceAudioDurationMs?: number | null
+}
+
+/** POST /api/user/asset/rps/voice/clone */
+export interface RoleVoiceCloneRequest {
+  assetId: number
+  referenceAudioId: number
+  voiceName: string
+  sampleText?: string
+  language: 'zh-CN' | 'en-US' | 'ja-JP' | string
+  gender: 'female' | 'male' | 'neutral' | string
+  ageRange: 'child' | 'teen' | 'young' | 'adult' | 'middle' | 'elderly' | string
+  rightsConfirmed: boolean
 }
 
 /** 个人资产从表形态 */
@@ -1564,6 +1587,37 @@ export interface StoryboardGenerateScriptData {
   warning?: string | null
 }
 
+/** 自动分镜覆盖生成后的原稿 / AI 候选稿审核。 */
+export interface StoryboardScriptReviewItem {
+  storyboardId: number
+  sortOrder?: number | null
+  title?: string | null
+  storyScript?: string | null
+  dialogueText?: string | null
+  reason?: string | null
+}
+
+export interface StoryboardScriptReviewData {
+  taskId: number
+  status: string
+  applied?: boolean
+  originals: StoryboardScriptReviewItem[]
+  suggestions: StoryboardScriptReviewItem[]
+}
+
+export interface StoryboardScriptReviewApplyItem {
+  decision: 'ORIGINAL' | 'SUGGESTION' | 'MANUAL'
+  storyboardId: number
+  title?: string
+  storyScript?: string
+  dialogueText?: string
+}
+
+export interface StoryboardScriptReviewApplyRequest {
+  taskId: number
+  items: StoryboardScriptReviewApplyItem[]
+}
+
 /** POST /api/user/task/resume — 统一续生（按 taskId 识别任务类型） */
 export interface UserTaskResumeRequest {
   taskId: number
@@ -1660,6 +1714,8 @@ export interface StoryboardGenerateVideoPromptRequest {
    * false=继续生成（跳过已有 video_prompt）；true=重新生成（全部覆盖）。
    */
   overwrite?: boolean
+  /** 仅返回候选提示词，不写回分镜；用户确认后再调用保存接口 */
+  previewOnly?: boolean
 }
 
 export interface StoryboardGenerateVideoPromptData {
@@ -1946,6 +2002,8 @@ export interface StoryboardVideoGenerateRequest {
   referenceAudioIds?: number[] | null
   /** 单镜头：参考视频生成记录 ID（aid_gen_record），按用户选择顺序提交 */
   referenceVideoRecordIds?: number[] | null
+  /** 精准换脸测试版：一张源人物图 + 一个目标视频。 */
+  faceSwap?: boolean
   userInputText?: string | null
 }
 
@@ -2112,6 +2170,8 @@ export interface StoryboardRecordListByStoryboardRow {
   storyboardId: number
   genType: StoryboardRecordGenType | string
   fileUrl?: string | null
+  /** 本次生成实际提交给模型的提示词；用于与当前人工工作稿对照。 */
+  promptText?: string | null
   /** 是否被选为最终分镜产物：1=是、0=否（同分镜+同 genType 大类内互斥） */
   isSelected?: number | null
   createTime?: string | null
@@ -2847,11 +2907,14 @@ export interface UserModelListByFuncGroupVO {
 
 /** /api/user/asset/extract/estimate */
 export type AssetExtractType = 'character' | 'scene' | 'prop'
+export type AssetExtractScope = 'EPISODE_INCREMENTAL' | 'PROJECT_FULL' | 'PROJECT_OUTLINE'
 
 export interface UserAssetExtractEstimateRequest {
   projectId: number
   episodeId?: number
   extractTypes?: AssetExtractType[]
+  /** 剧集项目：当前集增量或全项目角色扫描 */
+  extractScope?: AssetExtractScope
 }
 
 export interface UserAssetExtractEstimateData {
@@ -2976,6 +3039,8 @@ export interface UserAssetExtractParallelRequest {
   projectId: number
   episodeId?: number
   extractTypes: AssetExtractType[]
+  /** PROJECT_FULL 仅用于角色；场景/道具仍按当前集归属 */
+  extractScope?: AssetExtractScope
   /** key=extractType，value=agentCode（如 aid_prop_extractor） */
   agentCodes: Partial<Record<AssetExtractType, string>> & Record<string, string>
   /** key=extractType，value=modelCode；未传的 type 走后端 3 级兜底（项目配置 → aid_config） */
@@ -3166,6 +3231,14 @@ export interface UserTaskDetailData {
   inputSnapshot?: string | null
   resultData?: string | null
   errorMessage?: string | null
+  errorCode?: string | null
+  errorType?: string | null
+  errorSource?: string | null
+  needRecharge?: boolean | null
+  rechargeOwner?: string | null
+  retryable?: boolean | null
+  billingStatus?: string | null
+  refundStatus?: string | null
   totalCount?: number
   modelCode?: string | null
   queuePosition?: number | null

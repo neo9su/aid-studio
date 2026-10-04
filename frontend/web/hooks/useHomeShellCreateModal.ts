@@ -101,6 +101,7 @@ function openCreateModal(options?: { worksTab?: 'film' | 'series' }) {
     creationGlobalSettingDraft: {
       ...base,
       scriptType: d.scriptType,
+      complianceProfile: d.complianceProfile,
       modelStrategy: d.modelStrategy,
       creationMode: d.creationMode,
       selectedStyle: null,
@@ -151,6 +152,7 @@ async function runCreateConfirm(router: { push: (href: string) => void }) {
       projectName: finalTitle,
       projectDesc: finalGlobalSetting.description || '',
       projectType: state.creationProjectTypeDraft,
+      complianceProfile: finalGlobalSetting.complianceProfile,
       aspectRatio: finalGlobalSetting.aspectRatio,
       scriptType: finalGlobalSetting.scriptType,
       ...draftStylePayload,

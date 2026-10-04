@@ -1,5 +1,6 @@
 import { createContext } from 'react'
 import type { ExtractModalScope } from '~/components/steps/ExtractAgentModal'
+import type { AssetExtractScope } from '~/types/business-api'
 import type { GlobalSettingData,StoryboardPanel } from '~/types'
 import type { StoryScriptFlushResult } from '~/utils/storyScriptPersistence'
 /** 创作流程内「项目配置」页 / 弹窗状态与保存 */
@@ -41,7 +42,7 @@ export interface PreviewExportBridge {
 export interface CreateFlowShellContext {
   goToStep: (stepIndex: number) => void
   stopExtractAssets: () => void | Promise<void>
-  openExtractModalFromScp: (scope: Exclude<ExtractModalScope, 'all'>) => void
+  openExtractModalFromScp: (scope: ExtractModalScope, extractScope?: AssetExtractScope) => void
   openContinueExtractModal: () => void
   dismissScriptChangeLightBanner: () => void
   jumpToStoryboardScriptFromVideo: (panelIndex: number) => void

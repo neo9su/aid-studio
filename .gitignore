@@ -80,6 +80,9 @@ CLAUDE.md
 # 发布构建产物（deploy/release.ps1 输出，附件上传 Release 后即可清理）
 /release-build/
 
+# Local workstation deployment state (databases, logs, downloaded runtimes and secrets)
+/.runtime/
+
 # 根目录排查记录与智能体对话草稿不得入库
 /temp.txt
 /音画能力的部分.txt

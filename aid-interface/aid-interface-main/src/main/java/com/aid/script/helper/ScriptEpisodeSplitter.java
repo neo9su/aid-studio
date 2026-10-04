@@ -29,6 +29,12 @@ public final class ScriptEpisodeSplitter {
     /** 标题前的常见分隔符（冒号/破折号/顿号/点号/空白） */
     private static final String TITLE_SEPARATOR = "[\\s:：\\-—~·、.。]*";
 
+    /** Markdown ATX 标题前缀，同时兼容中文文档常见的“#第一集”写法 */
+    private static final String MARKDOWN_HEADING_PREFIX = "(?:#{1,6}\\s*)?";
+
+    /** Markdown ATX 标题可选的尾部 # 标记 */
+    private static final String MARKDOWN_HEADING_SUFFIX = "\\s*#*\\s*$";
+
     private ScriptEpisodeSplitter() {
     }
 
@@ -128,12 +134,13 @@ public final class ScriptEpisodeSplitter {
         if (ordinal.find()) {
             String prefix = keyword.substring(0, ordinal.start());
             String suffix = keyword.substring(ordinal.end());
-            return Pattern.compile("^\\s*" + quoteIfNotEmpty(prefix)
+            return Pattern.compile("^\\s*" + MARKDOWN_HEADING_PREFIX + quoteIfNotEmpty(prefix)
                     + "([" + ORDINAL_CHARS + "]+)" + quoteIfNotEmpty(suffix)
-                    + TITLE_SEPARATOR + "(.*?)\\s*$");
+                    + TITLE_SEPARATOR + "(.*?)" + MARKDOWN_HEADING_SUFFIX);
         }
         // 纯分隔词：行首字面量匹配（无序数组）
-        return Pattern.compile("^\\s*" + Pattern.quote(keyword) + TITLE_SEPARATOR + "(.*?)\\s*$");
+        return Pattern.compile("^\\s*" + MARKDOWN_HEADING_PREFIX + Pattern.quote(keyword)
+                + TITLE_SEPARATOR + "(.*?)" + MARKDOWN_HEADING_SUFFIX);
     }
 
     /**

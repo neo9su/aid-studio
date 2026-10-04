@@ -43,6 +43,10 @@ public class AidComicProject extends BaseEntity implements Serializable
     @Excel(name = "项目描述")
     private String projectDesc;
 
+    /** 项目总纲/资产圣经（独立于分集剧本） */
+    @ToString.Exclude
+    private String projectOutline;
+
     /** 待审核项目名称；审核通过后原子替换 project_name */
     private String pendingProjectName;
 
@@ -52,6 +56,9 @@ public class AidComicProject extends BaseEntity implements Serializable
     /** 类型: series剧集, movie电影 */
     @Excel(name = "类型: series剧集, movie电影")
     private String projectType;
+
+    /** 内容与发布合规模式：PRIVATE_ADULT / CN_MAINLAND / US_PLATFORMS */
+    private String complianceProfile;
 
     /** 封面图（相对路径） */
     @Excel(name = "封面图")

@@ -24,10 +24,15 @@ import {
 } from '~/utils/businessApi'
 import type { ScriptSplitPreviewVO } from '~/types/business-api'
 import { CREATE_SERIES_EPISODE_LIST_PATH } from '~/utils/createFlowRoutes'
-import { assertScriptPlainTextFile, validateScriptUploadFile } from '~/utils/scriptFileUpload'
+import {
+  assertScriptPlainTextFile,
+  SCRIPT_UPLOAD_ACCEPT,
+  validateScriptUploadFile
+} from '~/utils/scriptFileUpload'
 import { noDataIconUrl as emptyImageIconRaw } from '~/utils/emptyImageIcon'
 import { fetchUserProjectDetailOnce } from '~/utils/userProjectDetailOnce'
 import { assetUrl } from '~/utils/assetUrl'
+import { ProjectOutlineModal } from '~/components/steps/scene-character-prop/ProjectOutlineModal'
 import starBlackIconRaw from '~/assets/img/icon/star_black.svg'
 import './series-script-upload.css'
 
@@ -66,6 +71,8 @@ function SeriesScriptUploadClient() {
   const [episodeKeyword, setEpisodeKeyword] = useState('第一集')
   const [scriptText, setScriptText] = useState('')
   const [previewData, setPreviewData] = useState<ScriptSplitPreviewVO | null>(null)
+  const [outlineModalOpen, setOutlineModalOpen] = useState(false)
+  const [outlineProjectId, setOutlineProjectId] = useState<number | null>(null)
   const dragDepthRef = useRef(0)
 
   const hasFile = !!pendingFile
@@ -97,7 +104,7 @@ function SeriesScriptUploadClient() {
       return
     }
     if (file.size > MAX_SCRIPT_BYTES) {
-      message.warning('文件过大，请选择较小的 txt 文件')
+      message.warning('文件过大，请选择较小的 txt 或 md 文件')
       return
     }
     setPendingFile(file)
@@ -171,6 +178,16 @@ function SeriesScriptUploadClient() {
       q[k] = Array.isArray(v) ? v.map((item) => String(item ?? '')) : v
     }
     pushRoute(CREATE_SERIES_EPISODE_LIST_PATH, q)
+  }
+
+  async function openProjectOutline() {
+    const projectId = await resolveSeriesProjectId()
+    if (!projectId) {
+      message.error('缺少项目信息，请从首页创建剧集后进入')
+      return
+    }
+    setOutlineProjectId(projectId)
+    setOutlineModalOpen(true)
   }
 
   async function resolveSeriesProjectId(): Promise<number | null> {
@@ -324,13 +341,20 @@ function SeriesScriptUploadClient() {
             <img src={emptyImageIconUrl} alt="" className="empty-image-icon empty-image-icon--xl" />
           </div>
           <p className="series-script-upload__hint">
-            仅支持 .txt 纯文本格式，剧本字数不超过10万字，可拖拽至此处上传
+            支持 .txt 和 .md 文本格式，剧本字数不超过10万字，可拖拽至此处上传
           </p>
+          <button
+            type="button"
+            className="series-script-upload__outline"
+            onClick={() => void openProjectOutline()}
+          >
+            先录入项目总纲（不计入分集）
+          </button>
           <input
             ref={fileInputRef}
             type="file"
             className="series-script-upload__input"
-            accept=".txt,text/plain"
+            accept={SCRIPT_UPLOAD_ACCEPT}
             onChange={onFileChange}
           />
           <button type="button" className="series-script-upload__btn" onClick={openPicker}>
@@ -350,7 +374,9 @@ function SeriesScriptUploadClient() {
             </div>
             <div className="series-script-upload__file-info">
               <div className="series-script-upload__file-name">{displayFileName}</div>
-              <div className="series-script-upload__file-meta">Txt·{fileSizeLabel}</div>
+              <div className="series-script-upload__file-meta">
+                {pendingFile?.name.toLowerCase().endsWith('.md') ? 'Markdown' : 'Txt'}·{fileSizeLabel}
+              </div>
             </div>
             <button
               type="button"
@@ -442,6 +468,11 @@ function SeriesScriptUploadClient() {
           </div>
         </div>
       )}
+      <ProjectOutlineModal
+        open={outlineModalOpen}
+        projectId={outlineProjectId}
+        onOpenChange={setOutlineModalOpen}
+      />
     </div>
   )
 }

@@ -5,6 +5,7 @@ import { Modal } from 'antd'
 import ModalTitleWatermark from '~/components/ModalTitleWatermark'
 import CreateFirstStepFormBody from '~/components/steps/CreateFirstStepFormBody'
 import type { GlobalSettingData } from '~/types'
+import type { ProjectComplianceProfile } from '~/utils/projectComplianceProfile'
 import './create-first-step-modal.css'
 type RatioValue = '16:9' | '9:16' | '4:3' | '3:4' | '1:1' | '21:9'
 type ProjectTypeValue = 'movie' | 'series'
@@ -34,6 +35,7 @@ export interface CreateFirstStepModalProps {
   onScriptTypeChange: (value: ScriptTypeValue) => void
   onModelStrategyChange: (value: StrategyValue) => void
   onCreationModeChange: (value: CreationModeValue) => void
+  onComplianceProfileChange: (value: ProjectComplianceProfile) => void
   onModelValueChange: (value: GlobalSettingData) => void
   onConfirm: () => void
 }
@@ -61,6 +63,7 @@ export function CreateFirstStepModal({
   onScriptTypeChange,
   onModelStrategyChange,
   onCreationModeChange,
+  onComplianceProfileChange,
   onModelValueChange,
   onConfirm
 }: CreateFirstStepModalProps) {
@@ -118,6 +121,7 @@ export function CreateFirstStepModal({
           onScriptTypeChange={onScriptTypeChange}
           onModelStrategyChange={onModelStrategyChange}
           onCreationModeChange={onCreationModeChange}
+          onComplianceProfileChange={onComplianceProfileChange}
           onModelValueChange={onModelValueChange}
         />
 

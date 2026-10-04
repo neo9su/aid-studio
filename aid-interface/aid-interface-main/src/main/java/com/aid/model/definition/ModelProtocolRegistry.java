@@ -56,7 +56,8 @@ public class ModelProtocolRegistry {
             case "audio" -> Stream.concat(audios.stream().map(AudioProviderClient::protocol),
                     Stream.of("tokendance:ark:tts", "tokendance:ark:tts_ws",
                             "tokendance:minimax:t2a_v2_ws", "tokendance:minimax:voice_clone",
-                            TokenDanceProtocols.OPENAI_CHAT_COMPLETIONS));
+                            TokenDanceProtocols.OPENAI_CHAT_COMPLETIONS,
+                            com.aid.media.provider.impl.QwenTtsProviderClient.PROTOCOL));
             default -> {
                 log.info("查询协议的模型类型无效: modelType={}", type);
                 throw new ServiceException("模型类型不支持");

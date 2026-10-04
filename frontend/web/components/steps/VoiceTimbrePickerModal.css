@@ -109,11 +109,54 @@ html.app-shell-create
 }
 
 .voice-picker-title {
-  margin: 0 0 16px;
+  margin: 0;
   font-size: 18px;
   font-weight: 600;
   color: #f1f5f9;
   line-height: 1.4;
+}
+
+.voice-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.voice-clone-open-btn {
+  color: #4ae7fd;
+  border-color: rgba(74, 231, 253, 0.35);
+  background: rgba(74, 231, 253, 0.08);
+}
+
+.voice-clone-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid rgba(74, 231, 253, 0.2);
+  border-radius: 10px;
+  background: rgba(9, 18, 28, 0.7);
+}
+
+.voice-clone-row,
+.voice-clone-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.voice-clone-row .ant-input { flex: 1; }
+.voice-clone-row .ant-select { width: 132px; }
+.voice-clone-actions .ant-checkbox-wrapper { flex: 1; color: #b9c3d1; }
+
+.voice-clone-panel .ant-input,
+.voice-clone-panel .ant-select-selector,
+.voice-clone-panel .ant-btn-default {
+  color: #e6edf3 !important;
+  background: #242529 !important;
+  border-color: rgba(78, 94, 122, 0.42) !important;
 }
 
 .voice-picker-filters {

@@ -42,6 +42,9 @@ public enum GenTypeEnum {
      */
     EDGE("edge", "首尾视频"),
 
+    /** 长视频自动拆分产生的内部片段，不在用户素材列表展示。 */
+    VIDEO_SEGMENT("video_segment", "长视频片段"),
+
     /**
      * 用户上传视频（区别于 AI 生成视频，归入视频大类，可被设为分镜主视频）
      */

@@ -12,7 +12,11 @@ import { fetchUserTaskDetailOnce } from '~/composables/useTaskSseFollow'
 import { useCreationStore } from '~/stores/creation'
 import type { BillingQuoteRequest, UserTaskRow } from '~/types/business-api'
 import { dispatchCreateFlowTaskCommand } from '~/utils/createFlowTaskCommand'
-import { buildTaskResumeBillingRequest, normUserTaskType } from '~/utils/taskPartialFailed'
+import {
+  buildTaskResumeBillingRequest,
+  isPartialFailedResumableTaskType,
+  normUserTaskType
+} from '~/utils/taskPartialFailed'
 import {
   extractSceneIdsFromPartialFailed,
   parseTaskPartialFailedData
@@ -94,6 +98,9 @@ export function useCreateFlowGlobalTasks(options: {
           ...(sceneIds.length ? { sceneIds } : {}),
           manualAgentModelPick: false
         })
+      } else if (status === 'FAILED' && isPartialFailedResumableTaskType(ty)) {
+        useCreationStore.getState().removePausedTaskFollow(taskId)
+        dispatchCreateFlowTaskCommand('resume', { taskId, taskType: task.taskType ?? null })
       } else {
         useCreationStore.getState().removePausedTaskFollow(taskId)
         dispatchCreateFlowTaskCommand('track', { taskId, taskType: task.taskType ?? null })

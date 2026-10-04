@@ -82,6 +82,24 @@ public class AiModelConfigServiceImpl implements IAiModelConfigService {
     }
 
     @Override
+    public AiModelConfigVo selectByModelCodeForUser(String modelCode, Long userId, String capabilityCode) {
+        com.aid.aid.domain.AidAiModelAlias alias = modelDefinitions.alias(modelCode);
+        if (alias != null) {
+            AiModelConfigVo aliased = resolveAlias(alias, userId);
+            return invocationResolver.select(aliased, capabilityCode);
+        }
+        AidAiModel model = aidAiModelService.getOne(
+            Wrappers.<AidAiModel>lambdaQuery()
+                .eq(AidAiModel::getModelCode, modelCode)
+                .eq(AidAiModel::getStatus, STATUS_NORMAL)
+                .eq(AidAiModel::getDelFlag, DEL_FLAG_NORMAL)
+                .last("limit 1"),
+            false
+        );
+        return invocationResolver.select(buildConfigVo(model, userId), capabilityCode);
+    }
+
+    @Override
     public AiModelConfigVo selectByCategoryWithHighestPriority(String category) {
         AidAiModel model = aidAiModelService.getOne(
             Wrappers.<AidAiModel>lambdaQuery()

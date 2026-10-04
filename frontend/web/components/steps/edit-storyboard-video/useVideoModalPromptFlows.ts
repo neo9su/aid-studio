@@ -1,13 +1,15 @@
 'use client'
 
-import { message } from 'antd'
+import { Input, message, Modal } from 'antd'
+import { createElement } from 'react'
 import { buildModalTaskOverlayKey } from '~/composables/useModalTaskScope'
 import { isStoryboardVideoTaskOngoing } from '~/composables/useStoryboardVideoGenerateTask'
 import type { AsyncPromptApplyTicket } from '~/utils/asyncPromptApplyGuard'
 import {
 userStoryboardGenerateVideoPrompt,
 userStoryboardGenerateVideoPromptGrid,
-userStoryboardGenerateVideoPromptImage
+userStoryboardGenerateVideoPromptImage,
+userStoryboardSaveVideoPrompt
 } from '~/utils/businessApi'
 import {
 resolveStoryboardGenConfigLlmFields,
@@ -16,6 +18,7 @@ STORYBOARD_GEN_CONFIG_SCENE_CODES
 import {
 awaitStoryboardPromptGenerateTask,
 fetchStoryboardPromptPlainWithRetry,
+fetchStoryboardVideoPromptPreview,
 resumeStoryboardPromptGenerateTask,
 sanitizeStoryboardPromptModelCode
 } from '~/utils/storyboardPromptGenerateFlow'
@@ -26,6 +29,48 @@ import type { Mirrored } from './useMirrored'
 
 /** 视频提示词生成任务：提交 / SSE 跟随 / 刷新恢复（原 runStoryboardVideoPromptGenerateFlow 段逻辑） */
 export function useVideoModalPromptFlows(ctx: VideoModalCtx): void {
+  function confirmVideoPromptPreview(prompt: string): Promise<string | null> {
+    let editedPrompt = String(prompt || '')
+    return new Promise((resolve) => {
+      Modal.confirm({
+        title: '编辑并确认视频提示词',
+        width: 760,
+        content: createElement('div', { style: { marginTop: 12 } }, [
+          createElement(
+            'div',
+            {
+              key: 'tip',
+              style: { marginBottom: 8, color: 'rgba(127,127,127,0.9)' }
+            },
+            '可直接修改或粘贴完整提示词；确认后才会覆盖原内容。'
+          ),
+          createElement(Input.TextArea, {
+            key: 'editor',
+            defaultValue: editedPrompt,
+            autoSize: { minRows: 12, maxRows: 22 },
+            maxLength: 20_000,
+            showCount: true,
+            onChange: (event) => {
+              editedPrompt = event.target.value
+            }
+          })
+        ]),
+        okText: '确认覆盖',
+        cancelText: '保留原内容',
+        onOk: () => {
+          const value = editedPrompt.trim()
+          if (!value) {
+            message.warning('视频提示词不能为空')
+            return Promise.reject(new Error('blank video prompt'))
+          }
+          resolve(value)
+          return undefined
+        },
+        onCancel: () => resolve(null)
+      })
+    })
+  }
+
   async function fetchStoryboardImageToVideoPromptAfterGenerate(
     storyboardId: number
   ): Promise<string> {
@@ -162,11 +207,24 @@ export function useVideoModalPromptFlows(ctx: VideoModalCtx): void {
       }
 
       if (taskOutcome.ok !== false && sceneIdx === ctx.currentSceneIndex.get()) {
-        const prompt =
+        const previewPrompt =
           taskKind === 'multi-video-prompt-gen'
+            ? await fetchStoryboardVideoPromptPreview(taskId, storyboardId)
+            : ''
+        let prompt =
+          previewPrompt ||
+          (taskKind === 'multi-video-prompt-gen'
             ? await fetchStoryboardMultiVideoPromptAfterGenerate(storyboardId)
-            : await fetchStoryboardImageToVideoPromptAfterGenerate(storyboardId)
+            : await fetchStoryboardImageToVideoPromptAfterGenerate(storyboardId))
         if (prompt) {
+          if (previewPrompt) {
+            const confirmedPrompt = await confirmVideoPromptPreview(previewPrompt)
+            if (!confirmedPrompt) {
+              message.info('已保留原视频提示词')
+              return
+            }
+            prompt = confirmedPrompt
+          }
           let applied = false
           if (taskKind === 'multi-video-prompt-gen') {
             applied = await ctx.applyMultiParamPromptFromApi(prompt, promptApplyTicket)
@@ -174,6 +232,9 @@ export function useVideoModalPromptFlows(ctx: VideoModalCtx): void {
             applied = await ctx.applyVideoPromptFromApi(prompt, promptApplyTicket)
           }
           if (applied) {
+            if (previewPrompt) {
+              await userStoryboardSaveVideoPrompt({ storyboardId, videoPrompt: prompt })
+            }
             await ctx.refreshRecommendedDurationAfterPromptGenerate(storyboardId)
           }
         }
@@ -214,6 +275,7 @@ export function useVideoModalPromptFlows(ctx: VideoModalCtx): void {
     }>
     fetchPromptAfterGenerate: (storyboardId: number) => Promise<string>
     applyPrompt: (plain: string, ticket: AsyncPromptApplyTicket) => Promise<boolean>
+    previewBeforeApply?: boolean
   }) {
     if (ctx.isStoryboardVideoPromptGeneratingForScene(opts.sceneIdx)) return
 
@@ -298,16 +360,31 @@ export function useVideoModalPromptFlows(ctx: VideoModalCtx): void {
         }
       }
 
-      const prompt = await opts.fetchPromptAfterGenerate(storyboardId)
+      const previewPrompt = opts.previewBeforeApply
+        ? await fetchStoryboardVideoPromptPreview(taskId, storyboardId)
+        : ''
+      let prompt = previewPrompt || (await opts.fetchPromptAfterGenerate(storyboardId))
       if (!prompt) {
         message.warning('生成完成，但未获取到视频提示词内容')
         return
+      }
+
+      if (previewPrompt) {
+        const confirmedPrompt = await confirmVideoPromptPreview(previewPrompt)
+        if (!confirmedPrompt) {
+          message.info('已保留原视频提示词')
+          return
+        }
+        prompt = confirmedPrompt
       }
 
       const applied = await opts.applyPrompt(prompt, promptApplyTicket)
       if (!applied) {
         message.warning('检测到分镜切换或手动修改，已保留当前提示词')
         return
+      }
+      if (previewPrompt) {
+        await userStoryboardSaveVideoPrompt({ storyboardId, videoPrompt: prompt })
       }
       if (opts.sceneIdx === ctx.currentSceneIndex.get()) {
         await ctx.refreshRecommendedDurationAfterPromptGenerate(storyboardId)
@@ -393,11 +470,13 @@ export function useVideoModalPromptFlows(ctx: VideoModalCtx): void {
           projectId: saveCtx.projectId,
           episodeId: saveCtx.episodeId,
           storyboardIds: [storyboardId],
+          previewOnly: true,
           ...llmFields
         })
       },
       fetchPromptAfterGenerate: fetchStoryboardMultiVideoPromptAfterGenerate,
-      applyPrompt: ctx.applyMultiParamPromptFromApi
+      applyPrompt: ctx.applyMultiParamPromptFromApi,
+      previewBeforeApply: true
     })
   }
 

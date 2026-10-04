@@ -1,8 +1,11 @@
 package com.aid.media.reference.impl;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.stereotype.Component;
 
@@ -38,14 +41,17 @@ public class AgnesImageReferenceRenderStrategy extends AbstractImageReferenceRen
         String prompt = stripMappingSection(ctx.getOriginalPrompt());
 
         List<ResolvedImageReference> refRefs = pickReferenceType(ctx.getReferences());
-        List<String> allUrls = new ArrayList<>();
+        Map<String, Integer> imageNumberByUrl = new LinkedHashMap<>();
         for (ResolvedImageReference r : refRefs)
         {
-            allUrls.add(r.getUrl());
+            imageNumberByUrl.computeIfAbsent(r.getUrl().trim(), ignored -> imageNumberByUrl.size() + 1);
         }
+        List<String> allUrls = new ArrayList<>(imageNumberByUrl.keySet());
         List<String> limitedUrls = limitReferenceUrls(allUrls, ctx, "Agnes");
-        int retainCount = limitedUrls.size();
-        List<ResolvedImageReference> retained = new ArrayList<>(refRefs);
+        Set<String> retainedUrls = new LinkedHashSet<>(limitedUrls);
+        List<ResolvedImageReference> retained = refRefs.stream()
+                .filter(r -> retainedUrls.contains(r.getUrl().trim()))
+                .toList();
 
         Map<Integer, String> labelByN = buildEntityLabels(ctx.getReferences());
         for (ResolvedImageReference r : ctx.getReferences())
@@ -62,20 +68,17 @@ public class AgnesImageReferenceRenderStrategy extends AbstractImageReferenceRen
             {
                 if (i > 0) { note.append(", "); }
                 ResolvedImageReference r = retained.get(i);
-                note.append("图").append(i + 1).append('=').append(labelByN.getOrDefault(r.getN(), entityLabel(r)));
+                note.append("图").append(imageNumberByUrl.get(r.getUrl().trim())).append('=')
+                        .append(labelByN.getOrDefault(r.getN(), entityLabel(r)));
             }
             prompt = prompt + note;
         }
 
-        List<String> referenceUrls = new ArrayList<>();
-        for (ResolvedImageReference r : retained)
-        {
-            referenceUrls.add(r.getUrl());
-        }
+        List<String> referenceUrls = new ArrayList<>(limitedUrls);
 
-        int descCount = ctx.getReferences().size() - retainCount;
+        int descCount = ctx.getReferences().size() - refRefs.size();
         log.info("Agnes 参考渲染: refTotal={}, 引用图={}, 描述型素材={}, referenceUrls={}",
-                ctx.getReferences().size(), retainCount, descCount, referenceUrls.size());
+                ctx.getReferences().size(), refRefs.size(), descCount, referenceUrls.size());
         return ImageReferenceRenderPlan.of(prompt, referenceUrls);
     }
 }

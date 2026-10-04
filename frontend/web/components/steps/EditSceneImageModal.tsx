@@ -25,7 +25,9 @@ import {
   UploadOutlined,
   FolderOutlined,
   PictureOutlined,
-  LoadingOutlined
+  LoadingOutlined,
+  SmileOutlined,
+  UserSwitchOutlined
 } from '@ant-design/icons'
 import {
   HorizontalScrollTabBar
@@ -40,7 +42,8 @@ import { SceneSettingModal } from './SceneSettingModal'
 import { resolveSettingEditBlockedTooltip } from './edit-scene-image/settingEditPermission'
 import {
   buildSceneModalGenerateRequest,
-  resolveSceneModalGenerationFormId
+  resolveSceneModalGenerationFormId,
+  resolveSceneModalReferenceImages
 } from './edit-scene-image/sceneModalGenerateRequest'
 import { ImportScriptModal } from './ImportScriptModal'
 import { DialogueDrawPanel } from './DialogueDrawPanel'
@@ -54,6 +57,7 @@ import { shouldShowAssetImageRegenerateAction } from '~/utils/assetImageActionMo
 import { assetUrl } from '~/utils/assetUrl'
 import { isFormIdUnderActiveStep3FormImageTask } from '~/utils/step3FormImageTaskRegistry'
 import { storyboardPromptHtmlToPlain } from '~/utils/storyboardPromptAssetRef'
+import { scriptApiTextToEditorHtml } from '~/utils/htmlPlain'
 import type { BillingQuoteRequest } from '~/types/business-api'
 import {
   useEditSceneImageModalController
@@ -113,6 +117,8 @@ export function EditSceneImageModal(props: EditSceneImageModalProps) {
   const c = useEditSceneImageModalController(props)
 
   const [canvasToolbarHoverKey, setCanvasToolbarHoverKey] = useState<CanvasToolbarKey | null>(null)
+  const [roleReferenceLibraryOpen, setRoleReferenceLibraryOpen] = useState(false)
+  const [roleReferenceCategory, setRoleReferenceCategory] = useState<'pose' | 'expression'>('pose')
   const autoRegenerateSubmittingScopesRef = useRef(new Set<string>())
   const [autoRegenerateSubmittingScopeKeys, setAutoRegenerateSubmittingScopeKeys] = useState<
     string[]
@@ -139,22 +145,32 @@ export function EditSceneImageModal(props: EditSceneImageModalProps) {
     currentAutoRegenerateScopeKey
   )
   const selectedDialogueModel = c.selectedDialogueModel()
+  const isCharacterEditor =
+    props.imageType === 'character' ||
+    (props.imageType === 'form' && props.formParentAssetType === 'character')
   const selectedDialogueModelCode = String(selectedDialogueModel?.id || '').trim()
+  const currentImageUrl = String((currentImg as { url?: unknown } | null)?.url || '').trim()
   const currentImageFormId = Number(
     (currentImg as { rpsFormId?: unknown } | null)?.rpsFormId ?? NaN
   )
   const resolvedCurrentFormId = resolveSceneModalGenerationFormId(
     currentImg as Record<string, unknown> | null,
-    c.activeRpsFormIds()
+    c.activeRpsFormIds(),
+    props.imageType === 'form' ? currentSceneIndex : 0
   )
   const quoteRequest = useMemo<BillingQuoteRequest | null>(() => {
     if (!props.open) return null
     const prompt = storyboardPromptHtmlToPlain(c.dialogueInstructionHtml.value || '').trim()
     const modelCode = selectedDialogueModelCode
     if (!modelCode) return null
-    const referenceImages = c.dialogueSourceImages.value
+    const explicitReferenceImages = c.dialogueSourceImages.value
       .map((image) => String(image.url || '').trim())
       .filter(Boolean)
+    const referenceImages = resolveSceneModalReferenceImages({
+      referenceImages: explicitReferenceImages,
+      currentImageUrl,
+      capabilityCode: selectedDialogueModel?.capabilityCode
+    })
     const settings = c.dialogueSettings.value
     const aspectRatio = String(settings.aspectRatio || '').trim() || '1:1'
     const size = String(settings.quality || '').trim().toUpperCase() || '2K'
@@ -189,8 +205,10 @@ export function EditSceneImageModal(props: EditSceneImageModalProps) {
     c.dialogueInstructionHtml.value,
     c.dialogueSettings.value,
     c.dialogueSourceImages.value,
+    currentImageUrl,
     props.open,
     resolvedCurrentFormId,
+    selectedDialogueModel?.capabilityCode,
     selectedDialogueModelCode
   ])
   const generationQuote = useBillingQuote(quoteRequest)
@@ -267,6 +285,42 @@ export function EditSceneImageModal(props: EditSceneImageModalProps) {
       重新生成
     </Button>
   )
+
+  const openRoleReferenceLibrary = (category: 'pose' | 'expression') => {
+    setRoleReferenceCategory(category)
+    setRoleReferenceLibraryOpen(true)
+  }
+
+  const handleRoleReferenceImport = (asset: any) => {
+    const url = String(asset?.url || asset?.thumbnail || '').trim()
+    if (!url) {
+      message.warning('该参考资产没有可用图片，请先在资产库中补图')
+      return false
+    }
+    if (c.dialogueSourceImages.value.some((item) => item.url === url)) {
+      message.info('该参考图已经导入')
+      setRoleReferenceLibraryOpen(false)
+      return true
+    }
+    if (c.dialogueSourceImages.value.length >= FORM_IMAGE_REFERENCE_LIMIT) {
+      message.warning(`参考图最多 ${FORM_IMAGE_REFERENCE_LIMIT} 张`)
+      return false
+    }
+    c.dialogueSourceImages.set([
+      ...c.dialogueSourceImages.value,
+      { url, title: asset?.name || (roleReferenceCategory === 'pose' ? '姿势参考' : '表情参考') }
+    ])
+    if (!storyboardPromptHtmlToPlain(c.dialogueInstructionHtml.value || '').trim()) {
+      const instruction =
+        roleReferenceCategory === 'pose'
+          ? '保留当前角色的身份、五官、发型和服装一致，参考导入图片的身体姿势，生成单人角色参考图。'
+          : '保留当前角色的身份、五官、发型和服装一致，参考导入图片的表情与情绪神态，生成单人角色参考图。'
+      c.dialogueInstructionHtml.set(scriptApiTextToEditorHtml(instruction))
+    }
+    setRoleReferenceLibraryOpen(false)
+    message.success(roleReferenceCategory === 'pose' ? '已导入姿势参考' : '已导入表情/情绪参考')
+    return true
+  }
 
   return (
     <Modal
@@ -613,6 +667,26 @@ export function EditSceneImageModal(props: EditSceneImageModalProps) {
                       >
                         多机位
                       </Button>
+                      {isCharacterEditor ? (
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<UserSwitchOutlined />}
+                          onClick={() => openRoleReferenceLibrary('pose')}
+                        >
+                          姿势参考
+                        </Button>
+                      ) : null}
+                      {isCharacterEditor ? (
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<SmileOutlined />}
+                          onClick={() => openRoleReferenceLibrary('expression')}
+                        >
+                          表情/情绪
+                        </Button>
+                      ) : null}
                       {currentImg?._pending ? (
                         <Button
                           type="text"
@@ -828,6 +902,15 @@ export function EditSceneImageModal(props: EditSceneImageModalProps) {
         title="导入图片"
         acceptAssetType="image"
         onImport={c.handleAssetLibraryImport}
+      />
+      <ImportScriptModal
+        open={roleReferenceLibraryOpen}
+        onOpenChange={setRoleReferenceLibraryOpen}
+        title={roleReferenceCategory === 'pose' ? '选择姿势参考' : '选择表情/情绪参考'}
+        acceptAssetType="image"
+        initialTab="material"
+        initialMaterialCategory={roleReferenceCategory}
+        onImport={handleRoleReferenceImport}
       />
       <SelectSceneImageModal
         open={c.showDialogueImportModal.value}

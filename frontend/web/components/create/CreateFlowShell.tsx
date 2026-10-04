@@ -49,6 +49,7 @@ import { CreateFlowStepStrip } from './create-flow-shell/CreateFlowStepStrip'
 import { CreateFlowShellOverlays } from './create-flow-shell/CreateFlowShellOverlays'
 import { CreateFlowShellSkeleton } from './create-flow-shell/CreateFlowShellSkeleton'
 import { CreateFlowStepLoading } from './create-flow-shell/CreateFlowStepLoading'
+import { CodexExpertDrawer } from './CodexExpertDrawer'
 import { useCreateFlowPublishExport } from './create-flow-shell/useCreateFlowPublishExport'
 import { useCreateFlowGlobalTasks } from './create-flow-shell/useCreateFlowGlobalTasks'
 import './create-flow-shell/create-flow-shell.css'
@@ -769,6 +770,7 @@ export function CreateFlowShell({ children }: { children: ReactNode }) {
             agents: extractAgents,
             modelCodes: extractModelCodes,
             scope: extract.extractModalScope,
+            initialExtractScope: extract.extractInitialScope,
             actionMode: extractModalActionMode,
             onOpenChange: (value) =>
               useCreationStore.setState({ showExtractAgentModal: value }),
@@ -801,6 +803,7 @@ export function CreateFlowShell({ children }: { children: ReactNode }) {
             onScriptTypeChange: (value) => updateGlobalSettingDraftField('scriptType', value),
             onModelStrategyChange: (value) => updateGlobalSettingDraftField('modelStrategy', value),
             onCreationModeChange: (value) => updateGlobalSettingDraftField('creationMode', value),
+            onComplianceProfileChange: (value) => updateGlobalSettingDraftField('complianceProfile', value),
             onModelValueChange: patchGlobalSettingDraftStyle,
             onConfirm: () =>
               void handleGlobalSettingConfirm({
@@ -832,6 +835,13 @@ export function CreateFlowShell({ children }: { children: ReactNode }) {
             onSuccess: (payload) => void publishExport.onPublishCasePlazaMetaSuccess(payload)
           }}
         />
+        {pageReady && !isSeriesScriptUpload && !isSeriesEpisodeList ? (
+          <CodexExpertDrawer
+            projectId={activeProjectId}
+            episodeId={currentEpisodeId}
+            routePath={route.path}
+          />
+        ) : null}
       </div>
     </createFlowShellContext.Provider>
   )

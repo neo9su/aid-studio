@@ -1,6 +1,6 @@
 'use client'
 
-import { Button } from 'antd'
+import { Button, message, Switch } from 'antd'
 import { PlusOutlined, CloseOutlined, SwapOutlined } from '@ant-design/icons'
 import { ShimmerImage } from '~/components/common/ShimmerImage'
 import { BillingQuoteHint } from '~/components/common/BillingQuoteHint'
@@ -30,10 +30,12 @@ import {
 import { buildStoryboardVideoResolutionField } from '~/utils/storyboardVideoGenerateParams'
 import { buildGenerateReferenceAudioFields } from '~/utils/storyboardVideoReferenceAudioWire'
 import { buildGenerateReferenceVideoFields } from '~/utils/storyboardVideoReferenceVideoWire'
+import { buildFaceSwapExecutionPrompt, supportsFaceSwap } from '~/utils/faceSwapCapability'
 
 const starWhiteIcon = assetUrl(starWhiteIconRaw)
 
-const PROMPT_PLACEHOLDER = '描述你想要生成的画面内容和动作,如:一个穿着红色裙子的小女孩在草地上奔跑'
+const PROMPT_PLACEHOLDER =
+  '可直接输入或粘贴视频提示词；也可先点击“生成提示词”，再人工修改后生成视频'
 
 export function buildVideoQuoteRequest(ctx: VideoModalCtx): BillingQuoteRequest | null {
   if (!ctx.props().open) return null
@@ -92,8 +94,8 @@ export function buildVideoQuoteRequest(ctx: VideoModalCtx): BillingQuoteRequest 
   }
   if (tab === 'multiParam') {
     const modelName = String(ctx.multiParamVideoModel.value || '').trim()
-    const videoPrompt = ctx.multiParamPromptPlain().trim()
-    if (!modelName || !videoPrompt) return null
+    const originalPrompt = ctx.multiParamPromptPlain().trim()
+    if (!modelName) return null
     const localAssets = collectStoryboardPromptAssets(
       ctx.sceneImages.value,
       ctx.characterImages.value,
@@ -104,7 +106,17 @@ export function buildVideoQuoteRequest(ctx: VideoModalCtx): BillingQuoteRequest 
       patchEmptyResolvedPromptAssets(ctx.resolvedMultiParamPromptAssets.value, localAssets),
       localAssets
     )
-    const referenceOverrides = buildStoryboardVideoReferenceOverrides(videoPrompt, mergedAssets)
+    const faceSwap = ctx.faceSwapEnabled.value && supportsFaceSwap(ctx.activeVideoRawModel())
+    if (faceSwap && (localAssets.length !== 1 || ctx.referenceVideos.value.length !== 1
+      || ctx.referenceAudios.value.length > 0)) return null
+    const videoPrompt = faceSwap
+      ? buildFaceSwapExecutionPrompt(originalPrompt, localAssets[0]!, ctx.referenceVideos.value[0]!)
+      : originalPrompt
+    if (!videoPrompt) return null
+    const referenceOverrides = buildStoryboardVideoReferenceOverrides(
+      videoPrompt,
+      faceSwap ? localAssets : mergedAssets
+    )
     return {
       quoteType: 'STORYBOARD_VIDEO',
       payload: {
@@ -115,6 +127,7 @@ export function buildVideoQuoteRequest(ctx: VideoModalCtx): BillingQuoteRequest 
         ...common,
         ...buildGenerateReferenceAudioFields(ctx.referenceAudios.value),
         ...buildGenerateReferenceVideoFields(ctx.referenceVideos.value),
+        ...(faceSwap ? { faceSwap: true } : {}),
         ...(ctx.multiParamShootingTechnique.value?.value?.trim()
           ? { userInputText: ctx.multiParamShootingTechnique.value.value.trim().slice(0, 500) }
           : {})
@@ -256,6 +269,47 @@ export function VideoConfigPanel({ ctx }: { ctx: VideoModalCtx }) {
   const quoteRequest = buildVideoQuoteRequest(ctx)
   const generationQuote = useBillingQuote(quoteRequest)
   const promptQuoteRequest = buildVideoPromptQuoteRequest(ctx)
+  const storyboardId = ctx.currentStoryboardId()
+  const submittedPromptSnapshot = storyboardId
+    ? ctx.submittedVideoPromptByStoryboardId.value[String(storyboardId)]
+    : undefined
+
+  function renderSubmittedPromptSnapshot() {
+    const snapshot = submittedPromptSnapshot
+    if (!snapshot?.prompt) return null
+    const time = snapshot.submittedAt
+      ? new Date(snapshot.submittedAt).toLocaleString('zh-CN', { hour12: false })
+      : ''
+    return (
+      <section className="submitted-video-prompt" aria-label="最近提交的模型提示词">
+        <div className="submitted-video-prompt__header">
+          <div>
+            <strong>最近提交给视频模型的版本</strong>
+            <span>只读对照，不会覆盖上方工作稿</span>
+          </div>
+          <div className="submitted-video-prompt__meta">
+            {snapshot.modelName ? <span>{snapshot.modelName}</span> : null}
+            {time ? <span>{time}</span> : null}
+          </div>
+        </div>
+        <pre>{snapshot.prompt}</pre>
+        <div className="submitted-video-prompt__actions">
+          <Button
+            size="small"
+            onClick={() => {
+              void navigator.clipboard.writeText(snapshot.prompt)
+              message.success('已复制提交版本')
+            }}
+          >
+            复制
+          </Button>
+          <Button size="small" onClick={() => ctx.writePromptPlainToActiveEditor(snapshot.prompt)}>
+            恢复到上方继续修改
+          </Button>
+        </div>
+      </section>
+    )
+  }
 
   const primaryModelDropdown = isGridVideoTab ? (
     <ModelSelectDropdown
@@ -431,6 +485,7 @@ export function VideoConfigPanel({ ctx }: { ctx: VideoModalCtx }) {
                   onCopyCameraMovementDesc={ctx.copyCameraDesc}
                   onParamSettingsConfirm={ctx.applyImageToVideoParamSettingsConfirm}
                 >
+                  {renderSubmittedPromptSnapshot()}
                   <ModelConfigBlock ctx={ctx} modelSlot={primaryModelDropdown} />
                 </StoryboardGeneratePanel>
               </div>
@@ -484,6 +539,19 @@ export function VideoConfigPanel({ ctx }: { ctx: VideoModalCtx }) {
                   onCopyPrompt={ctx.copyMultiParamPrompt}
                   onParamSettingsConfirm={ctx.applyMultiParamSettingsConfirm}
                 >
+                  {renderSubmittedPromptSnapshot()}
+                  {supportsFaceSwap(ctx.activeVideoRawModel()) ? (
+                    <div className="face-swap-beta-row">
+                      <div>
+                        <strong>精准换脸（测试版）</strong>
+                        <span>一张人物图 + 一个目标视频；保留原动作、镜头和音轨</span>
+                      </div>
+                      <Switch
+                        checked={ctx.faceSwapEnabled.value}
+                        onChange={(checked) => ctx.faceSwapEnabled.set(checked)}
+                      />
+                    </div>
+                  ) : null}
                   <ModelConfigBlock
                     ctx={ctx}
                     modelSlot={
@@ -544,6 +612,7 @@ export function VideoConfigPanel({ ctx }: { ctx: VideoModalCtx }) {
                     </div>
                   }
                 >
+                  {renderSubmittedPromptSnapshot()}
                   <ModelConfigBlock
                     ctx={ctx}
                     modelSlot={

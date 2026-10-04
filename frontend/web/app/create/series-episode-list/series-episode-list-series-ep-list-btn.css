@@ -63,6 +63,30 @@
   overflow: auto;
 }
 
+.series-ep-list__asset-empty {
+  flex: 1;
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 16px;
+  text-align: center;
+}
+
+.series-ep-list__asset-empty-title {
+  color: rgba(230, 237, 243, 0.92);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.series-ep-list__asset-empty-desc {
+  margin-bottom: 6px;
+  color: #8e97a5;
+  font-size: 13px;
+}
+
 /* 本页资产卡片：点击预览；竖版封面铺满宽度，减少两侧留白 */
 /* 竖版封面 + 底部信息区按内容高度收紧（不再固定 68px） */
 .series-ep-list__asset-grid-wrap.assets-library-figma {

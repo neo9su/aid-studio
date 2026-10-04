@@ -30,6 +30,7 @@ export function useStoryboardScriptGeneration(opts: {
   panelsRef: MutableRefObject<StoryboardPanel[]>
   onChangeRef: MutableRefObject<(panels: StoryboardPanel[]) => void>
   onGenerationCompleteRef: MutableRefObject<(panels: StoryboardPanel[]) => void>
+  onReviewReadyRef: MutableRefObject<(taskId: number) => void>
   isImageModalOpenRef: MutableRefObject<boolean>
   currentPanelIndexRef: MutableRefObject<number>
   setCurrentPanelIndex: (v: number) => void
@@ -43,6 +44,7 @@ export function useStoryboardScriptGeneration(opts: {
     panelsRef,
     onChangeRef,
     onGenerationCompleteRef,
+    onReviewReadyRef,
     isImageModalOpenRef,
     currentPanelIndexRef,
     setCurrentPanelIndex,
@@ -86,6 +88,7 @@ export function useStoryboardScriptGeneration(opts: {
     panelsRef,
     onChangeRef,
     onGenerationCompleteRef,
+    onReviewReadyRef,
     scriptManualAgentModelPickRef,
     pageDisposedRef,
     generationStoppedRef,
@@ -184,7 +187,9 @@ export function useStoryboardScriptGeneration(opts: {
       modalAutoReopenAttemptedRef,
       setCurrentPanelIndex,
       setIsImageModalOpen,
-      refreshPanelsFromStoryboardListApi,
+      refreshPanelsFromStoryboardListApi: async () => {
+        await refreshPanelsFromStoryboardListApi()
+      },
       restoreStoryboardImageBatchIfNeeded: () => restoreStoryboardImageBatchIfNeeded()
     })
 

@@ -134,6 +134,74 @@ class StoryboardPromptBatchAlignerTest
         assertTrue(result.elements().isEmpty());
     }
 
+    @Test
+    void shouldAcceptEquivalentEnglishBusinessFieldAliases() throws Exception
+    {
+        List<JsonNode> shotElements = List.of(
+                json("{\"shotKey\":\"SB-101\",\"shotNumber\":\"001\",\"prompt\":\"first\"}"),
+                json("{\"shotKey\":\"SB-205\",\"shotNumber\":\"002\",\"prompt\":\"second\"}"));
+        StoryboardPromptBatchAligner.AlignmentResult shotResult = StoryboardPromptBatchAligner.align(
+                shotElements, targets(), BUSINESS_NO_FIELD);
+
+        List<StoryboardPromptBatchAligner.Target> groupTargets = List.of(
+                new StoryboardPromptBatchAligner.Target(101L, "开场"),
+                new StoryboardPromptBatchAligner.Target(205L, "追逐"));
+        List<JsonNode> groupElements = List.of(
+                json("{\"shotKey\":\"SB-101\",\"shotGroupName\":\"开场\",\"prompt\":\"first\"}"),
+                json("{\"shotKey\":\"SB-205\",\"shotGroupName\":\"追逐\",\"prompt\":\"second\"}"));
+        StoryboardPromptBatchAligner.AlignmentResult groupResult = StoryboardPromptBatchAligner.align(
+                groupElements, groupTargets, "镜头组");
+
+        assertTrue(shotResult.valid());
+        assertTrue(groupResult.valid());
+        assertEquals("second", groupResult.elements().get(1).path("prompt").asText());
+    }
+
+    @Test
+    void shouldRejectMismatchedEnglishBusinessFieldAlias() throws Exception
+    {
+        List<JsonNode> elements = List.of(
+                json("{\"shotKey\":\"SB-101\",\"shotGroupName\":\"追逐\",\"prompt\":\"wrong\"}"),
+                json("{\"shotKey\":\"SB-205\",\"shotGroupName\":\"开场\",\"prompt\":\"wrong\"}"));
+        List<StoryboardPromptBatchAligner.Target> groupTargets = List.of(
+                new StoryboardPromptBatchAligner.Target(101L, "开场"),
+                new StoryboardPromptBatchAligner.Target(205L, "追逐"));
+
+        StoryboardPromptBatchAligner.AlignmentResult result = StoryboardPromptBatchAligner.align(
+                elements, groupTargets, "镜头组");
+
+        assertFalse(result.valid());
+        assertTrue(result.reason().startsWith("business_number_mismatch"));
+    }
+
+    @Test
+    void shouldAcceptGenericChineseBusinessNumberWhenItEchoesShotKey() throws Exception
+    {
+        List<JsonNode> elements = List.of(
+                json("{\"shotKey\":\"SB-101\",\"业务编号\":\"SB-101\",\"prompt\":\"first\"}"),
+                json("{\"shotKey\":\"SB-205\",\"业务编号\":\"SB-205\",\"prompt\":\"second\"}"));
+
+        StoryboardPromptBatchAligner.AlignmentResult result = StoryboardPromptBatchAligner.align(
+                elements, targets(), BUSINESS_NO_FIELD);
+
+        assertTrue(result.valid());
+        assertEquals("second", result.elements().get(1).path("prompt").asText());
+    }
+
+    @Test
+    void shouldRejectGenericChineseBusinessNumberForAnotherShot() throws Exception
+    {
+        List<JsonNode> elements = List.of(
+                json("{\"shotKey\":\"SB-101\",\"业务编号\":\"SB-205\",\"prompt\":\"wrong\"}"),
+                json("{\"shotKey\":\"SB-205\",\"业务编号\":\"SB-101\",\"prompt\":\"wrong\"}"));
+
+        StoryboardPromptBatchAligner.AlignmentResult result = StoryboardPromptBatchAligner.align(
+                elements, targets(), BUSINESS_NO_FIELD);
+
+        assertFalse(result.valid());
+        assertTrue(result.reason().startsWith("business_number_mismatch"));
+    }
+
     private static List<StoryboardPromptBatchAligner.Target> targets()
     {
         return List.of(

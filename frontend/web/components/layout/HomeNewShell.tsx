@@ -267,6 +267,7 @@ export function HomeNewShell({ children }: { children: ReactNode }) {
         onScriptTypeChange={(v) => homeCreateModal.updateGlobalSettingDraftField('scriptType', v)}
         onModelStrategyChange={(v) => homeCreateModal.updateGlobalSettingDraftField('modelStrategy', v)}
         onCreationModeChange={(v) => homeCreateModal.updateGlobalSettingDraftField('creationMode', v)}
+        onComplianceProfileChange={(v) => homeCreateModal.updateGlobalSettingDraftField('complianceProfile', v)}
         onModelValueChange={homeCreateModal.patchGlobalSettingDraftStyle}
         onConfirm={() => homeCreateModal.handleCreateConfirm()}
       />

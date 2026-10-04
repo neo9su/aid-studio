@@ -72,6 +72,7 @@ import { StoryboardGenerateModal } from './StoryboardGenerateModal'
 import { BatchGenerateStoryboardModal } from './BatchGenerateStoryboardModal'
 import { StoryboardScriptCardView } from './storyboard-script/StoryboardScriptCardView'
 import { StoryboardScriptListView } from './storyboard-script/StoryboardScriptListView'
+import { StoryboardScriptReviewModal } from './storyboard-script/StoryboardScriptReviewModal'
 import { useStoryboardScriptPanelOps } from './storyboard-script/useStoryboardScriptPanelOps'
 import { useStoryboardScriptGeneration } from './storyboard-script/useStoryboardScriptGeneration'
 import {
@@ -154,6 +155,8 @@ export function StoryboardScript({
   onChangeRef.current = onChange
   const onGenerationCompleteRef = useRef(onGenerationComplete)
   onGenerationCompleteRef.current = onGenerationComplete
+  const [scriptReviewTaskId, setScriptReviewTaskId] = useState<number | null>(null)
+  const onReviewReadyRef = useRef((taskId: number) => setScriptReviewTaskId(taskId))
 
   const [viewMode, setViewMode] = useState<'list' | 'card'>('list')
   const [showAutoGenerateModal, setShowAutoGenerateModal] = useState(false)
@@ -207,6 +210,7 @@ export function StoryboardScript({
     panelsRef,
     onChangeRef,
     onGenerationCompleteRef,
+    onReviewReadyRef,
     isImageModalOpenRef,
     currentPanelIndexRef,
     setCurrentPanelIndex,
@@ -755,6 +759,17 @@ export function StoryboardScript({
           initialContent={currentScriptPanelContent}
           onOpenChange={setShowStoryboardScriptModal}
           onSave={(payload) => void ops.handleSaveStoryboardScript(payload)}
+        />
+      ) : null}
+      {scriptReviewTaskId ? (
+        <StoryboardScriptReviewModal
+          open
+          taskId={scriptReviewTaskId}
+          onApplied={async () => {
+            const refreshed = await gen.refreshPanelsFromStoryboardListApi()
+            setScriptReviewTaskId(null)
+            if (refreshed?.length) onGenerationCompleteRef.current(refreshed)
+          }}
         />
       ) : null}
       {/* 自动生成分镜弹窗：确定后开始生成 */}

@@ -54,8 +54,8 @@ public class ScriptSplitServiceImpl implements IScriptSplitService {
     /** 整篇剧本字数上限（与整篇上传口径一致） */
     private static final int MAX_TOTAL_WORDS = 100000;
 
-    /** 单集字数上限（与单集上传口径一致） */
-    private static final int MAX_EPISODE_WORDS = 10000;
+    /** 单集字数上限（与剧集整篇及单集上传口径一致） */
+    private static final int MAX_EPISODE_WORDS = MAX_TOTAL_WORDS;
 
     /** 单次分集数量上限（防误配分集词切出海量集） */
     private static final int MAX_EPISODES = 200;
@@ -278,7 +278,7 @@ public class ScriptSplitServiceImpl implements IScriptSplitService {
             if (words > MAX_EPISODE_WORDS) {
                 log.info("剧本分集单集超字数, projectId={}, sequenceNo={}, words={}",
                         request.getProjectId(), segment.getSequenceNo(), words);
-                throw new ServiceException("第" + segment.getSequenceNo() + "集超1万字");
+                throw new ServiceException("第" + segment.getSequenceNo() + "集超10万字");
             }
         }
         return segments;

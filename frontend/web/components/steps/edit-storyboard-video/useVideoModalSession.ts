@@ -15,7 +15,7 @@ import { listModalTabFollowsToSuspend } from '~/utils/modalTabSseMutex'
 import {
 clearStoryboardVideoModalGenSession
 } from '~/utils/storyboardVideoModalGenSession'
-import { formatTaskSseLiveText } from '~/utils/taskSseProgressText'
+import { formatTaskSseLiveText,resolveTaskSseDisplayProgress } from '~/utils/taskSseProgressText'
 import { useRef } from 'react'
 import type { VideoModalCtx,VideoModalSessionApi,VideoTaskKind } from './types'
 
@@ -126,6 +126,9 @@ export function useVideoModalSession(ctx: VideoModalCtx): void {
     ctx.videoGenerateTargetKey.set(buildModalTaskOverlayKey(overlayKeyParts(sceneIdx, taskKind)))
     const live = formatTaskSseLiveText(task || {}, '')
     ctx.videoGenerateProgressText.set(live || defaultVideoProgressTextForTaskKind(taskKind))
+    ctx.videoGenerateProgressPercent.set(
+      task ? resolveTaskSseDisplayProgress(task) ?? null : null
+    )
 
     const hasGeneratingRow = (ctx.props().scenes[sceneIdx]?.videos || []).some(
       (v: any) => v?._generating || v?._localGeneratingPlaceholder
@@ -200,6 +203,7 @@ export function useVideoModalSession(ctx: VideoModalCtx): void {
       if (matchesModalTaskOverlayKey(ctx.videoGenerateTargetKey.get(), overlayKeyParts(sceneIdx, k))) {
         ctx.videoGenerateTargetKey.set('')
         ctx.videoGenerateProgressText.set('分镜视频提交中…')
+        ctx.videoGenerateProgressPercent.set(null)
         return
       }
     }

@@ -30,6 +30,11 @@ const nextConfig: NextConfig = {
             {
               source: '/url/:path*',
               destination: `${proxyTarget.replace(/\/$/, '')}/:path*`
+            },
+            {
+              /** 本地上传/模型持久化媒体仍以 /profile 相对路径返回，开发态须同源代理到后端。 */
+              source: '/profile/:path*',
+              destination: `${proxyTarget.replace(/\/$/, '')}/profile/:path*`
             }
           ]
         }

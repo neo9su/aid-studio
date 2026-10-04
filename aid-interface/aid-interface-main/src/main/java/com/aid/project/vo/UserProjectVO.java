@@ -24,8 +24,14 @@ public class UserProjectVO {
     /** 项目描述 */
     private String projectDesc;
 
+    /** 项目总纲/资产圣经（仅创作者项目详情使用，独立于分集剧本） */
+    private String projectOutline;
+
     /** 类型: series剧集, movie电影 */
     private String projectType;
+
+    /** 内容与发布合规模式：PRIVATE_ADULT / CN_MAINLAND / US_PLATFORMS */
+    private String complianceProfile;
 
     /** 封面图（出参拼域名） */
     @MediaUrl

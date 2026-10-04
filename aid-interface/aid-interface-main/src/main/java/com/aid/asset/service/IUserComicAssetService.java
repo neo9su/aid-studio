@@ -6,6 +6,8 @@ import com.aid.asset.dto.UserComicAssetDeleteRequest;
 import com.aid.asset.dto.UserComicAssetDetailRequest;
 import com.aid.asset.dto.UserComicAssetListRequest;
 import com.aid.asset.dto.UserComicAssetUpdateRequest;
+import com.aid.asset.dto.UserComicAssetGenerateImageRequest;
+import com.aid.media.dto.MediaTaskResponse;
 import com.aid.asset.vo.UserComicAssetTypeVO;
 import com.aid.asset.vo.UserComicAssetVO;
 
@@ -77,4 +79,10 @@ public interface IUserComicAssetService {
      * @return 类型字典列表
      */
     List<UserComicAssetTypeVO> listAllowedTypes();
+
+    /** 使用资产提示词生成图片；产物由前端确认后保存到个人资产。 */
+    MediaTaskResponse generateAssetImage(UserComicAssetGenerateImageRequest request, Long userId);
+
+    /** 查询当前用户发起的资产补图任务。 */
+    MediaTaskResponse queryAssetImageTask(Long taskId, Long userId);
 }

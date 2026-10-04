@@ -11,8 +11,10 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.springframework.transaction.annotation.Transactional;
 import com.aid.aid.domain.AidUserComicAsset;
 import com.aid.aid.domain.AidComicAsset;
+import com.aid.aid.domain.media.AidMediaTask;
 import com.aid.aid.service.IAidUserComicAssetService;
 import com.aid.aid.service.IAidComicAssetService;
+import com.aid.aid.service.IAidMediaTaskService;
 import com.aid.aid.util.HiddenStylePromptJsonUtils;
 import com.aid.asset.constants.UserAssetTypeConstants;
 import com.aid.asset.dto.MergedAssetPageRequest;
@@ -21,6 +23,7 @@ import com.aid.asset.dto.UserComicAssetDeleteRequest;
 import com.aid.asset.dto.UserComicAssetDetailRequest;
 import com.aid.asset.dto.UserComicAssetListRequest;
 import com.aid.asset.dto.UserComicAssetUpdateRequest;
+import com.aid.asset.dto.UserComicAssetGenerateImageRequest;
 import com.aid.asset.service.IUserComicAssetService;
 import com.aid.asset.service.MergedAssetPagePlanner;
 import com.aid.asset.vo.MergedAssetVO;
@@ -30,6 +33,13 @@ import com.aid.common.exception.ServiceException;
 import com.aid.common.utils.DateUtils;
 import com.aid.common.aid.oss.util.MediaUrlResolver;
 import com.aid.media.cleanup.IMediaOssCleanupService;
+import com.aid.media.dto.MediaImageGenerateRequest;
+import com.aid.media.dto.MediaTaskResponse;
+import com.aid.media.service.IMediaGenerationService;
+import com.aid.model.service.IAiModelBusinessService;
+import com.aid.model.vo.AiModelVO;
+import com.aid.service.IAiModelConfigService;
+import com.aid.domain.vo.AiModelConfigVo;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
@@ -43,6 +53,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.LinkedHashMap;
 
 /**
  * C端用户自定义参考资产业务Service实现
@@ -74,6 +85,8 @@ public class UserComicAssetServiceImpl implements IUserComicAssetService {
     private static final int DEFAULT_PAGE_SIZE = 20;
     /** 最大分页大小（防止大分页拖垮查询） */
     private static final int MAX_PAGE_SIZE = 100;
+    private static final String ASSET_IMAGE_TASK_TYPE = "user_asset_custom_image";
+    private static final String MEDIA_TYPE_IMAGE = "IMAGE";
 
     /** C端允许的资产类型白名单（引用共享常量） */
     private static final Set<String> ALLOWED_ASSET_TYPES = UserAssetTypeConstants.ALLOWED_ASSET_TYPES;
@@ -110,6 +123,18 @@ public class UserComicAssetServiceImpl implements IUserComicAssetService {
     /** 媒体URL统一解析器：本站校验 + 相对路径规范化 */
     @Resource
     private MediaUrlResolver mediaUrlResolver;
+
+    @Resource
+    private IAiModelBusinessService aiModelBusinessService;
+
+    @Resource
+    private IAiModelConfigService aiModelConfigService;
+
+    @Resource
+    private IMediaGenerationService mediaGenerationService;
+
+    @Resource
+    private IAidMediaTaskService aidMediaTaskService;
 
     @Override
     public Long createAsset(UserComicAssetCreateRequest request, Long userId) {
@@ -351,8 +376,10 @@ public class UserComicAssetServiceImpl implements IUserComicAssetService {
     private List<MergedAssetVO> fetchPersonalSlice(Long userId, String assetType, String keyword, long offset, int limit) {
         LambdaQueryWrapper<AidUserComicAsset> w = buildPersonalCountWrapper(userId, assetType, keyword);
         w.select(AidUserComicAsset::getId, AidUserComicAsset::getAssetType, AidUserComicAsset::getAssetName,
-                AidUserComicAsset::getPromptText, AidUserComicAsset::getImageUrl,
-                AidUserComicAsset::getSortOrder);
+                AidUserComicAsset::getPersonalityDesc, AidUserComicAsset::getPromptText,
+                AidUserComicAsset::getImageUrl, AidUserComicAsset::getSourceType,
+                AidUserComicAsset::getSortOrder, AidUserComicAsset::getRemark,
+                AidUserComicAsset::getCreateTime);
         w.orderByAsc(AidUserComicAsset::getSortOrder).orderByDesc(AidUserComicAsset::getCreateTime).orderByDesc(AidUserComicAsset::getId);
         w.last("LIMIT " + limit + " OFFSET " + offset);
         List<MergedAssetVO> result = new ArrayList<>();
@@ -363,10 +390,14 @@ public class UserComicAssetServiceImpl implements IUserComicAssetService {
                     .assetType(a.getAssetType())
                     .assetName(a.getAssetName())
                     .promptText(a.getPromptText())
+                    .personalityDesc(a.getPersonalityDesc())
                     .imageUrl(a.getImageUrl())
                     .categories(Collections.emptyList())
                     .isRecommended(false)
                     .sortOrder(Objects.isNull(a.getSortOrder()) ? null : a.getSortOrder().longValue())
+                    .sourceType(a.getSourceType())
+                    .remark(a.getRemark())
+                    .createTime(a.getCreateTime())
                     .build());
         }
         return result;
@@ -380,8 +411,10 @@ public class UserComicAssetServiceImpl implements IUserComicAssetService {
         LambdaQueryWrapper<AidComicAsset> w = buildOfficialCountWrapper(
                 assetType, keyword, categoryCode, recommended);
         w.select(AidComicAsset::getId, AidComicAsset::getAssetType, AidComicAsset::getAssetName,
-                AidComicAsset::getPromptText, AidComicAsset::getImageUrl,
-                AidComicAsset::getIsRecommended, AidComicAsset::getSortOrder);
+                AidComicAsset::getPersonalityDesc, AidComicAsset::getPromptText,
+                AidComicAsset::getImageUrl,
+                AidComicAsset::getIsRecommended, AidComicAsset::getSortOrder,
+                AidComicAsset::getRemark, AidComicAsset::getCreateTime);
         w.orderByAsc(AidComicAsset::getSortOrder).orderByAsc(AidComicAsset::getId);
         w.last("LIMIT " + limit + " OFFSET " + offset);
         List<AidComicAsset> officialAssets = aidComicAssetService.list(w);
@@ -394,10 +427,14 @@ public class UserComicAssetServiceImpl implements IUserComicAssetService {
                     .assetType(a.getAssetType())
                     .assetName(a.getAssetName())
                     .promptText(a.getPromptText())
+                    .personalityDesc(a.getPersonalityDesc())
                     .imageUrl(a.getImageUrl())
                     .categories(a.getCategories())
                     .isRecommended(Boolean.TRUE.equals(a.getIsRecommended()))
                     .sortOrder(Objects.isNull(a.getSortOrder()) ? null : a.getSortOrder().longValue())
+                    .sourceType("OFFICIAL")
+                    .remark(a.getRemark())
+                    .createTime(a.getCreateTime())
                     .build());
         }
         return result;
@@ -570,6 +607,104 @@ public class UserComicAssetServiceImpl implements IUserComicAssetService {
     @Override
     public List<UserComicAssetTypeVO> listAllowedTypes() {
         return ALLOWED_TYPE_DICT;
+    }
+
+    @Override
+    public MediaTaskResponse generateAssetImage(UserComicAssetGenerateImageRequest request, Long userId) {
+        if (request == null || request.getAssetId() == null || userId == null || userId <= 0) {
+            throw new ServiceException("参数错误");
+        }
+
+        String sourceFlag = StrUtil.blankToDefault(request.getSourceFlag(), "custom").trim().toLowerCase();
+        String assetType;
+        String storedPrompt;
+        if (Objects.equals("official", sourceFlag)) {
+            AidComicAsset asset = aidComicAssetService.getOne(Wrappers.<AidComicAsset>lambdaQuery()
+                    .select(AidComicAsset::getId, AidComicAsset::getAssetType, AidComicAsset::getPromptText)
+                    .eq(AidComicAsset::getId, request.getAssetId())
+                    .eq(AidComicAsset::getDelFlag, DEL_FLAG_NORMAL)
+                    .last("LIMIT 1"));
+            if (asset == null) throw new ServiceException("资产不存在");
+            assetType = asset.getAssetType();
+            storedPrompt = asset.getPromptText();
+        } else if (Objects.equals("custom", sourceFlag)) {
+            AidUserComicAsset asset = aidUserComicAssetService.getOne(Wrappers.<AidUserComicAsset>lambdaQuery()
+                    .select(AidUserComicAsset::getId, AidUserComicAsset::getAssetType,
+                            AidUserComicAsset::getPromptText)
+                    .eq(AidUserComicAsset::getId, request.getAssetId())
+                    .eq(AidUserComicAsset::getUserId, userId)
+                    .eq(AidUserComicAsset::getDelFlag, DEL_FLAG_NORMAL)
+                    .eq(AidUserComicAsset::getStatus, STATUS_NORMAL)
+                    .last("LIMIT 1"));
+            if (asset == null) throw new ServiceException("资产不存在");
+            assetType = asset.getAssetType();
+            storedPrompt = asset.getPromptText();
+        } else {
+            throw new ServiceException("资产来源错误");
+        }
+
+        String prompt = StrUtil.isNotBlank(request.getPrompt()) ? request.getPrompt().trim()
+                : StrUtil.trim(storedPrompt);
+        if (StrUtil.isBlank(prompt)) throw new ServiceException("该资产没有可用提示词，请先填写提示词");
+
+        String funcCode = imageFunctionForAssetType(assetType);
+        List<AiModelVO> pool = aiModelBusinessService.listAvailableModelsByFuncCode(funcCode);
+        if (CollectionUtil.isEmpty(pool)) throw new ServiceException("当前业务未配置可用生图模型");
+        List<AiModelVO> textToImageModels = pool.stream().filter(this::supportsPromptOnlyImage).toList();
+        if (CollectionUtil.isEmpty(textToImageModels)) {
+            throw new ServiceException("当前业务没有支持纯提示词生图的模型");
+        }
+        AiModelVO model = StrUtil.isBlank(request.getModelCode()) ? textToImageModels.get(0)
+                : textToImageModels.stream().filter(item -> Objects.equals(item.getModelCode(), request.getModelCode()))
+                .findFirst().orElseThrow(() -> new ServiceException("所选模型不在当前业务模型池中"));
+        AiModelConfigVo modelConfig = aiModelConfigService.selectForBusiness(
+                model.getModelCode(), funcCode, model.getCapabilityCode());
+        if (modelConfig == null) throw new ServiceException("所选模型配置不可用");
+
+        MediaImageGenerateRequest mediaRequest = new MediaImageGenerateRequest();
+        mediaRequest.setModelName(model.getModelCode());
+        mediaRequest.setCapabilityCode(model.getCapabilityCode());
+        mediaRequest.setBusinessFuncCode(funcCode);
+        mediaRequest.setUserId(userId);
+        mediaRequest.setPrompt(prompt);
+        mediaRequest.setSize(StrUtil.blankToDefault(modelConfig.getDefaultSizeCode(), "1K"));
+        mediaRequest.setExpectedImageCount(1);
+        mediaRequest.setBizTaskId(request.getAssetId());
+        mediaRequest.setBizTaskType(ASSET_IMAGE_TASK_TYPE);
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("force_single", true);
+        options.put("aspect_ratio", StrUtil.blankToDefault(modelConfig.getDefaultAspectRatio(), "1:1"));
+        mediaRequest.setOptions(options);
+        return mediaGenerationService.generateImage(mediaRequest);
+    }
+
+    @Override
+    public MediaTaskResponse queryAssetImageTask(Long taskId, Long userId) {
+        if (taskId == null || taskId <= 0 || userId == null || userId <= 0) {
+            throw new ServiceException("任务不存在");
+        }
+        AidMediaTask task = aidMediaTaskService.getOne(Wrappers.<AidMediaTask>lambdaQuery()
+                .select(AidMediaTask::getId)
+                .eq(AidMediaTask::getId, taskId)
+                .eq(AidMediaTask::getUserId, userId)
+                .eq(AidMediaTask::getBizTaskType, ASSET_IMAGE_TASK_TYPE)
+                .eq(AidMediaTask::getMediaType, MEDIA_TYPE_IMAGE)
+                .last("LIMIT 1"));
+        if (task == null) throw new ServiceException("任务不存在");
+        return mediaGenerationService.queryTask(taskId, true);
+    }
+
+    private String imageFunctionForAssetType(String assetType) {
+        if (Objects.equals("reference_scene", assetType)) return "main_scene_image";
+        if (Objects.equals("reference_prop", assetType)) return "main_prop_image";
+        return "main_character_image";
+    }
+
+    private boolean supportsPromptOnlyImage(AiModelVO model) {
+        if (model == null || Boolean.FALSE.equals(model.getSupportsTextInput())) return false;
+        if (Objects.equals("text_to_image", model.getCapabilityCode())
+                || Objects.equals("text_to_image", model.getGenerateMode())) return true;
+        return model.getMinReferenceImages() == null || model.getMinReferenceImages() <= 0;
     }
 
     /**

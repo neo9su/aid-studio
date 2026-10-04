@@ -40,6 +40,7 @@ export function useStoryboardScriptGenerationActions(opts: {
   panelsRef: MutableRefObject<StoryboardPanel[]>
   onChangeRef: MutableRefObject<(panels: StoryboardPanel[]) => void>
   onGenerationCompleteRef: MutableRefObject<(panels: StoryboardPanel[]) => void>
+  onReviewReadyRef: MutableRefObject<(taskId: number) => void>
   scriptManualAgentModelPickRef: MutableRefObject<boolean>
   pageDisposedRef: MutableRefObject<boolean>
   generationStoppedRef: MutableRefObject<boolean>
@@ -52,6 +53,7 @@ export function useStoryboardScriptGenerationActions(opts: {
     panelsRef,
     onChangeRef,
     onGenerationCompleteRef,
+    onReviewReadyRef,
     scriptManualAgentModelPickRef,
     pageDisposedRef,
     generationStoppedRef,
@@ -109,7 +111,7 @@ export function useStoryboardScriptGenerationActions(opts: {
 
   const refreshPanelsFromStoryboardListApi = async () => {
     const context = await workbench.getProjectEpisodeContext()
-    if (!context) return
+    if (!context) return null
     try {
       const list = await userStoryboardList({
         projectId: context.projectId,
@@ -131,8 +133,10 @@ export function useStoryboardScriptGenerationActions(opts: {
         getStore().formData.storyboardScript.panels as StoryboardPanel[]
       )
       onChangeRef.current(getStore().formData.storyboardScript.panels as StoryboardPanel[])
+      return getStore().formData.storyboardScript.panels as StoryboardPanel[]
     } catch (error: unknown) {
       message.warning(`刷新分镜列表失败：${storyboardApiErr(error)}`)
+      return null
     }
   }
 
@@ -148,6 +152,8 @@ export function useStoryboardScriptGenerationActions(opts: {
     getStore().setStoryboardGenerating(true)
     getStore().setStoryboardError(null)
     prepareGeneratingProgress()
+    const originalPanels = getPersistedStoryboardScriptPanels(panelsRef.current)
+    const originalIds = new Set(originalPanels.map((panel) => panel.id))
 
     const routeContext = captureCreationLiveGenScope()
     try {
@@ -167,8 +173,15 @@ export function useStoryboardScriptGenerationActions(opts: {
         return
       }
       if (result.ok) {
-        syncStoryboardScriptPanelsFromTaskResult(result.panels)
+        const persisted = syncStoryboardScriptPanelsFromTaskResult(result.panels)
         getStore().setStoryboardGenerating(false)
+        const hasReview = !!result.taskId && originalPanels.length > 0
+          && persisted.some((panel) => !originalIds.has(panel.id))
+        if (hasReview) {
+          onReviewReadyRef.current(result.taskId!)
+          message.info('AI 分镜已生成，请对照原分镜确认后保存')
+          return
+        }
         message.success('分镜生成完成')
         onGenerationCompleteRef.current(result.panels)
         return
@@ -190,6 +203,15 @@ export function useStoryboardScriptGenerationActions(opts: {
       }
       getStore().stopStoryboardGeneration()
       getStore().setStoryboardProgress(0, 0)
+      const hasPartialReview = !!result.taskId && originalPanels.length > 0
+      if (hasPartialReview) {
+        onReviewReadyRef.current(result.taskId!)
+        const hasCandidate = persisted.some((panel) => !originalIds.has(panel.id))
+        message.warning(hasCandidate
+          ? '部分 AI 分镜已生成，请先对照审核；失败片段可稍后续生'
+          : 'AI 分镜未生成成功，原分镜已安全保留，请确认恢复')
+        return
+      }
       message.error(result.message || '分镜生成失败')
     } catch (error: unknown) {
       if (pageDisposedRef.current || !matchesCreationLiveGenScope(routeContext)) return
@@ -225,14 +247,23 @@ export function useStoryboardScriptGenerationActions(opts: {
       return
     }
     setIsResumingPartialFailed(true)
+    const beforePanels = getPersistedStoryboardScriptPanels(panelsRef.current)
+    const beforeIds = new Set(beforePanels.map((panel) => panel.id))
     generationStoppedRef.current = false
     getStore().setStoryboardGenerating(true)
     getStore().setStoryboardError(null)
     getStore().setStoryboardScriptPartialFailedData(null)
     try {
       const result = await storyboardScriptGen.resumePartialFailedGenerate(taskId, panelsRef.current)
-      syncStoryboardScriptPanelsFromTaskResult(result.panels)
+      const persisted = syncStoryboardScriptPanelsFromTaskResult(result.panels)
       if (result.ok) {
+        const hasReview = !!result.taskId && beforePanels.length > 0
+          && persisted.some((panel) => !beforeIds.has(panel.id))
+        if (hasReview) {
+          onReviewReadyRef.current(result.taskId!)
+          message.info('续生候选分镜已完成，请重新对照确认')
+          return
+        }
         message.success('分镜续生完成')
         onGenerationCompleteRef.current(result.panels)
       } else if (result.message) {

@@ -25,7 +25,7 @@ public class ExtractCostEstimateRequest
 
     /**
      * 提取范围（仅剧集生效，可空）：EPISODE_INCREMENTAL=当前集增量（默认）；
-     * PROJECT_FULL=全项目扫描（仅支持角色）。与提取接口口径一致。
+     * PROJECT_FULL=全项目扫描（仅支持角色）；PROJECT_OUTLINE=独立项目总纲。
      */
     private String extractScope;
 }

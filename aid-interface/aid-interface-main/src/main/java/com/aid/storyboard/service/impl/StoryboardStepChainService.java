@@ -391,11 +391,12 @@ public class StoryboardStepChainService
             {
                 StoryboardVideoGenerateRequest req = new StoryboardVideoGenerateRequest();
                 req.setStoryboardIds(batchIds);
-                req.setModelName(strVal(chainNext.get("modelName")));
+                String modelName = strVal(chainNext.get("modelName"));
+                req.setModelName(modelName);
                 req.setAspectRatio(strVal(chainNext.get("aspectRatio")));
-                req.setResolution(strVal(chainNext.get("resolution")));
+                req.setResolution(resolveChainedResolution(modelName, chainNext.get("resolution")));
                 if (chainNext.get("durationSeconds") instanceof Number n) { req.setDurationSeconds(n.intValue()); }
-                if (chainNext.get("generateAudio") instanceof Boolean b) { req.setGenerateAudio(b); }
+                req.setGenerateAudio(resolveChainedGenerateAudio(modelName, chainNext.get("generateAudio")));
                 StoryboardVideoGenerateVO vo = executeRootChainSubmission(promptTaskId,
                         slotReservation, handoffToken,
                         () -> storyboardVideoGenerationService.generateVideo(
@@ -441,11 +442,12 @@ public class StoryboardStepChainService
             {
                 StoryboardVideoFromImageGenerateRequest req = new StoryboardVideoFromImageGenerateRequest();
                 req.setStoryboardIds(batchIds);
-                req.setModelName(strVal(chainNext.get("modelName")));
+                String modelName = strVal(chainNext.get("modelName"));
+                req.setModelName(modelName);
                 req.setAspectRatio(strVal(chainNext.get("aspectRatio")));
-                req.setResolution(strVal(chainNext.get("resolution")));
+                req.setResolution(resolveChainedResolution(modelName, chainNext.get("resolution")));
                 if (chainNext.get("durationSeconds") instanceof Number n) { req.setDurationSeconds(n.intValue()); }
-                if (chainNext.get("generateAudio") instanceof Boolean b) { req.setGenerateAudio(b); }
+                req.setGenerateAudio(resolveChainedGenerateAudio(modelName, chainNext.get("generateAudio")));
                 // 不传 images：多镜头各自回落分镜主图 final_image_id 作参考；多镜头每镜 1 条，不传 count
                 StoryboardVideoGenerateVO vo = executeRootChainSubmission(promptTaskId,
                         slotReservation, handoffToken,
@@ -492,11 +494,12 @@ public class StoryboardStepChainService
             {
                 StoryboardVideoGridGenerateRequest req = new StoryboardVideoGridGenerateRequest();
                 req.setStoryboardIds(batchIds);
-                req.setModelName(strVal(chainNext.get("modelName")));
+                String modelName = strVal(chainNext.get("modelName"));
+                req.setModelName(modelName);
                 req.setAspectRatio(strVal(chainNext.get("aspectRatio")));
-                req.setResolution(strVal(chainNext.get("resolution")));
+                req.setResolution(resolveChainedResolution(modelName, chainNext.get("resolution")));
                 if (chainNext.get("durationSeconds") instanceof Number n) { req.setDurationSeconds(n.intValue()); }
-                if (chainNext.get("generateAudio") instanceof Boolean b) { req.setGenerateAudio(b); }
+                req.setGenerateAudio(resolveChainedGenerateAudio(modelName, chainNext.get("generateAudio")));
                 // 多镜头每镜 1 条，不传 count
                 StoryboardVideoGenerateVO vo = executeRootChainSubmission(promptTaskId,
                         slotReservation, handoffToken,
@@ -880,5 +883,25 @@ public class StoryboardStepChainService
     private String strVal(Object v)
     {
         return v == null ? null : String.valueOf(v);
+    }
+
+    /** 历史链路快照没有明确模型时，忽略旧音频偏好，交由最终默认模型能力决定。 */
+    static Boolean resolveChainedGenerateAudio(String modelName, Object generateAudio)
+    {
+        if (StrUtil.isBlank(modelName) || !(generateAudio instanceof Boolean value))
+        {
+            return null;
+        }
+        return value;
+    }
+
+    /** 历史链路快照没有明确模型时，忽略旧清晰度，交由最终默认模型选择兼容档位。 */
+    static String resolveChainedResolution(String modelName, Object resolution)
+    {
+        if (StrUtil.isBlank(modelName))
+        {
+            return null;
+        }
+        return resolution == null ? null : String.valueOf(resolution);
     }
 }

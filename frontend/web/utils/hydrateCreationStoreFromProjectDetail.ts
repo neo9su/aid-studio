@@ -7,6 +7,7 @@ import {
   resolveProjectCreationMode
 } from '~/utils/globalSettingEnums'
 import { createInitialCreationState } from '~/stores/creation/state'
+import { normalizeProjectComplianceProfile } from '~/utils/projectComplianceProfile'
 
 type CreationStore = ReturnType<typeof useCreationStore>
 
@@ -84,6 +85,7 @@ export function buildGlobalSettingFromProjectDetail(
     title: detail.projectName || base.title || '',
     // 作品描述按当前 project 为准；空串不得回退到 previous，否则切作品会串上一作品文案
     description: String(detail.projectDesc || '').trim(),
+    complianceProfile: normalizeProjectComplianceProfile(detail.complianceProfile),
     aspectRatio: mapProjectAspectRatio(detail.aspectRatio),
     scriptType: mapProjectScriptType(detail.scriptType),
     modelStrategy: mapProjectModelStrategy(detail.defaultGenMode),

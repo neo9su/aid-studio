@@ -283,6 +283,7 @@ export function StudioFlowModalHost() {
         onScriptTypeChange={(value) => globalSettingModal.updateGlobalSettingDraftField('scriptType', value)}
         onModelStrategyChange={(value) => globalSettingModal.updateGlobalSettingDraftField('modelStrategy', value)}
         onCreationModeChange={(value) => globalSettingModal.updateGlobalSettingDraftField('creationMode', value)}
+        onComplianceProfileChange={(value) => globalSettingModal.updateGlobalSettingDraftField('complianceProfile', value)}
         onModelValueChange={globalSettingModal.patchGlobalSettingDraftStyle}
         onConfirm={() => void globalSettingModal.handleGlobalSettingConfirm({
           navigateAfterSave: false,

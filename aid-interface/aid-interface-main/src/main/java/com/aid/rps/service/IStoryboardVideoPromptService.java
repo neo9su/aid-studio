@@ -36,7 +36,8 @@ public interface IStoryboardVideoPromptService
                                                 String agentCode, String modelCode,
                                                 Boolean overwrite, String continuityMode,
                                                 Long previousStoryboardId,
-                                                Map<String, Object> chainNext);
+                                                Map<String, Object> chainNext,
+                                                Boolean previewOnly);
 
     /**
      * 批量提交"图生方向（漫剧版）分镜视频提示词生成"父任务。

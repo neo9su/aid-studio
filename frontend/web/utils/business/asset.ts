@@ -143,6 +143,38 @@ export async function userAssetCustomUpdate(body: UserAssetCustomUpdateRequest):
   return success
 }
 
+export interface UserAssetImageTask {
+  taskId: number
+  status: 'QUEUED' | 'PENDING' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | string
+  ossUrl?: string | null
+  originUrl?: string | null
+  userMessage?: string | null
+  errorMessage?: string | null
+}
+
+/** 使用资产提示词生成缺失的参考图片。 */
+export async function userAssetCustomGenerateImage(body: {
+  assetId: number
+  sourceFlag: string
+  prompt?: string
+  modelCode?: string
+}): Promise<UserAssetImageTask> {
+  const res = await request.post<ApiEnvelope<UserAssetImageTask>>(
+    '/api/user/asset/custom/generate-image',
+    body
+  )
+  return unwrap(res)
+}
+
+/** 查询资产 AI 补图任务。 */
+export async function userAssetCustomGenerateImageStatus(taskId: number): Promise<UserAssetImageTask> {
+  const res = await request.post<ApiEnvelope<UserAssetImageTask>>(
+    '/api/user/asset/custom/generate-image/status',
+    { taskId }
+  )
+  return unwrap(res)
+}
+
 /** 用户自定义资产删除：POST /api/user/asset/custom/delete */
 export async function userAssetCustomDelete(body: UserAssetCustomDeleteRequest): Promise<boolean> {
   const res = await request.post<ApiEnvelope<boolean>>('/api/user/asset/custom/delete', body)

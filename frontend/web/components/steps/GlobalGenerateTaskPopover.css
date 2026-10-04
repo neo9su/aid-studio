@@ -165,6 +165,13 @@
   font-size: 12px;
 }
 
+.global-task-panel__stale {
+  margin-top: 4px;
+  color: #f5a623;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .global-task-panel__ops {
   display: flex;
   align-items: center;

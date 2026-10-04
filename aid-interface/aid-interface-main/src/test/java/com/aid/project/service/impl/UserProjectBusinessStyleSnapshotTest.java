@@ -27,6 +27,7 @@ import com.aid.common.exception.ServiceException;
 import com.aid.project.dto.UserProjectCreateRequest;
 import com.aid.project.dto.UserProjectUpdateRequest;
 import com.aid.project.service.ProjectStyleSnapshotService;
+import com.aid.project.service.IProjectContentGuardService;
 import com.aid.project.vo.UserProjectVO;
 import com.aid.projectgenconfig.service.IProjectGenConfigService;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -66,6 +67,7 @@ class UserProjectBusinessStyleSnapshotTest
         ReflectionTestUtils.setField(service, "aidComicEpisodeService", mock(IAidComicEpisodeService.class));
         ReflectionTestUtils.setField(service, "aidStoryboardService", mock(IAidStoryboardService.class));
         ReflectionTestUtils.setField(service, "projectGenConfigService", mock(IProjectGenConfigService.class));
+        ReflectionTestUtils.setField(service, "projectContentGuardService", mock(IProjectContentGuardService.class));
     }
 
     @Test
@@ -90,6 +92,7 @@ class UserProjectBusinessStyleSnapshotTest
         assertEquals("official", result.getStyleSource());
         assertEquals(31L, result.getStyleAssetId());
         assertEquals(hiddenJson, result.getHiddenStylePromptJson());
+        assertEquals("PRIVATE_ADULT", result.getComplianceProfile());
     }
 
     @Test
@@ -182,12 +185,14 @@ class UserProjectBusinessStyleSnapshotTest
         project.setId(241L);
         project.setStyleSource("custom");
         project.setStyleAssetId(86L);
+        project.setComplianceProfile("US_PLATFORMS");
 
         UserProjectVO result = ReflectionTestUtils.invokeMethod(
                 service, "buildProjectVO", project, null, null, false);
 
         assertEquals("custom", result.getStyleSource());
         assertEquals(86L, result.getStyleAssetId());
+        assertEquals("US_PLATFORMS", result.getComplianceProfile());
     }
 
     @Test

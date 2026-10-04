@@ -30,6 +30,30 @@ public class StoryboardSceneEnvelopeParser
 {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+    private static final String PROFESSIONAL_DIRECT_OUTPUT_CONTRACT = """
+
+            【当前直驱分镜接口输出契约（最高优先级，替代上文所有旧输出格式）】
+            最终响应只能是合法 JSON object，根键只能是 scenes，不得输出 Markdown 或解释。
+            格式必须为：
+            {"scenes":[{"sceneName":"必须逐字使用可用场景资产名","shots":[{"content":["镜头组：...","剧本内容：...","画面说明：...","台词：...","时空环境：...","引用信息：...","镜头模式：...","运镜等级：...","时长估算：...","镜头脚本：..."]}]}]}
+            scenes 按剧情顺序排列；每个场次对象只能包含 sceneName、shots 两个字段。
+            每个 shots 元素只能包含 content 一个字段；content 必须恰好包含上述 10 个固定字段字符串且顺序不变。
+            剧本内容必须逐字、保序覆盖当前有效剧情正文，不得输出数据库 ID。
+            """;
+
+    /**
+     * 专业版智能体的历史提示词使用 {@code {"content": [...]}} 单镜头组契约；直驱链路需要
+     * 按场次包装后才能绑定场景资产。将当前接口契约追加到同一个 system 消息末尾，明确覆盖旧契约。
+     */
+    public String enforceDirectOutputContract(String systemPrompt, boolean writerOutput)
+    {
+        if (!writerOutput)
+        {
+            return systemPrompt;
+        }
+        return StrUtil.nullToEmpty(systemPrompt) + PROFESSIONAL_DIRECT_OUTPUT_CONTRACT;
+    }
+
     /**
      * 解析模型输出并按原始数组顺序返回场次。
      *

@@ -13,6 +13,7 @@ UserAssetExtractFormGenerateCreationImageRequest
 } from '~/types/business-api'
 import { handleSseErrorRecharge,openRechargeModalFromInsufficientBalance } from '~/utils/api'
 import { userAssetExtractFormGenerateCreationImage } from '~/utils/businessApi'
+import { formatImageGenerationFailure } from '~/utils/imageGenerationFailure'
 import { isBenignTaskSseDisconnectMessage } from '~/utils/taskSseSilentDisconnect'
 
 function parseResultData(raw: unknown): EditImageCompleteData | null {
@@ -137,10 +138,9 @@ export async function runEditImageTask(payload: {
       return { ok: false, errorMessage: '未返回有效任务ID' }
     }
   } catch (e: unknown) {
-    const err = e as { msg?: string; message?: string }
-    const msg = String(err?.msg || err?.message || '生图任务提交失败')
-    openRechargeModalFromInsufficientBalance(msg)
-    return { ok: false, errorMessage: msg }
+    const failure = formatImageGenerationFailure(e, { fallbackReason: '生图任务提交失败' })
+    openRechargeModalFromInsufficientBalance(failure.reason)
+    return { ok: false, errorMessage: failure.displayMessage }
   }
 
   payload.onSubmitted?.({ taskId })
@@ -185,7 +185,10 @@ function resultFromTaskDetail(
     return { ok: false, errorMessage: '任务已取消' }
   }
   if (st === 'FAILED') {
-    return { ok: false, errorMessage: String(d.errorMessage || '生图失败') }
+    return {
+      ok: false,
+      errorMessage: formatImageGenerationFailure(d, { taskId: d.taskId }).displayMessage
+    }
   }
   return null
 }
@@ -239,7 +242,13 @@ export async function followEditImageTask(payload: {
         return { ok: false, errorMessage: msg, deferred: true }
       }
       handleSseErrorRecharge(r.errorData, msg)
-      return { ok: false, errorMessage: msg }
+      return {
+        ok: false,
+        errorMessage: formatImageGenerationFailure(
+          r.errorData ? { ...r.errorData, errorMessage: msg } : msg,
+          { taskId }
+        ).displayMessage
+      }
     }
 
     if (r.type === 'cancelled') {
@@ -255,6 +264,12 @@ export async function followEditImageTask(payload: {
     const recovered = resultFromTaskDetail(await fetchUserTaskDetailOnce(taskId))
     if (recovered) return recovered
     openRechargeModalFromInsufficientBalance(msg)
-    return { ok: false, errorMessage: msg }
+    return {
+      ok: false,
+      errorMessage: formatImageGenerationFailure(e, {
+        fallbackReason: '生图任务异常',
+        taskId
+      }).displayMessage
+    }
   }
 }

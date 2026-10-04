@@ -11,8 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * 剧本文件正文提取工具
- * 仅支持纯文本（.txt）一种格式，负责把上传的文件解析为纯文本正文，
- * 并拦截"图片等二进制文件改后缀伪装成 .txt"的情况。
+ * 支持纯文本（.txt）和 Markdown（.md），负责把上传的文件解析为文本正文，
+ * 并拦截"图片等二进制文件改后缀伪装成文本文件"的情况。
  * 不做任何业务校验（字数 / HTML / 归属），这些由 Service 层处理，本类只负责"取出文字"。
  *
  * @author 视觉AID
@@ -22,6 +22,9 @@ public final class ScriptFileExtractor
 {
     /** 扩展名：纯文本 */
     public static final String EXT_TXT = "txt";
+
+    /** 扩展名：Markdown 文本 */
+    public static final String EXT_MD = "md";
 
     /** UTF-8 BOM 字符（部分 txt 文件开头会带，需剔除） */
     private static final char UTF8_BOM = '\uFEFF';
@@ -54,15 +57,15 @@ public final class ScriptFileExtractor
      * 根据扩展名解析文件正文
      *
      * @param file 上传文件
-     * @param ext  小写扩展名（仅支持 txt）
+     * @param ext  小写扩展名（支持 txt / md）
      * @return 解析出的纯文本正文
      */
     public static String extractText(MultipartFile file, String ext)
     {
         try
         {
-            // 按扩展名分发（当前仅允许 txt，其余扩展名已在 Service 层白名单拦截）
-            if (EXT_TXT.equals(ext))
+            // txt 与 md 都是 UTF-8 文本，共用同一套二进制嗅探与 BOM 处理。
+            if (EXT_TXT.equals(ext) || EXT_MD.equals(ext))
             {
                 return extractTxt(file);
             }

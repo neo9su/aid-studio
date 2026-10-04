@@ -26,9 +26,10 @@ export default function VoiceLibraryPage() {
   const [playingId, setPlayingId] = useState<any>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [searchForm] = Form.useForm();
-  const tokenDanceProviderIds = new Set(
+  const workbenchProviderIds = new Set(
     providerOpts
-      .filter((provider: any) => String(provider.providerCode || '').trim().toLowerCase() === 'tokendance')
+      .filter((provider: any) => ['tokendance', 'qwen-tts-local', 'qwen_tts', 'qwen3_tts']
+        .includes(String(provider.providerCode || '').trim().toLowerCase()))
       .map((provider: any) => Number(provider.id))
   );
 
@@ -180,7 +181,7 @@ export default function VoiceLibraryPage() {
       <VoiceWorkbenchWizard
         open={workbenchOpen}
         modelOptions={modelOpts.filter((model: any) => model.status === '0'
-          && tokenDanceProviderIds.has(Number(model.providerId)))}
+          && workbenchProviderIds.has(Number(model.providerId)))}
         onClose={() => setWorkbenchOpen(false)}
         onPublished={loadList}
       />

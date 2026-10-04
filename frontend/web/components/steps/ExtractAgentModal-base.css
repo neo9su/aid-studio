@@ -1,4 +1,20 @@
 /* Tailwind/PostCSS component styles for ExtractAgentModal. */
+
+.extract-agent-modal .extract-scope-picker {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid rgba(74, 231, 253, 0.24);
+  border-radius: 10px;
+  background: rgba(8, 30, 43, 0.56);
+}
+
+.extract-agent-modal .extract-scope-picker__title {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 14px;
+  font-weight: 600;
+}
 /* 与 AgentPickerModal 一致的深色弹窗壳 */
 .extract-agent-modal .ant-modal {
   background: transparent !important;

@@ -133,7 +133,8 @@ public class BillingQuoteServiceImpl implements BillingQuoteService
     {
         ImagePricingQuotePayload pricing = convertAndValidate(payload, ImagePricingQuotePayload.class);
         AiModelConfigVo modelConfig = aiModelConfigService.selectByModelCodeForUser(
-                pricing.getModelCode(), userId);
+                pricing.getModelCode(), userId,
+                imageCapabilityForPricing(pricing.getGenerateMode()));
         if (modelConfig == null || !"image".equalsIgnoreCase(modelConfig.getModelType()))
         {
             throw new ServiceException("图片模型不可用");
@@ -158,6 +159,17 @@ public class BillingQuoteServiceImpl implements BillingQuoteService
             throw new ServiceException("暂无法预估");
         }
         return billingQuoteAssembler.single(TYPE_IMAGE_PRICING, modelConfig, result, 1);
+    }
+
+    /**
+     * 选型阶段报价必须使用用户本次选择的生成模式，不能回落到模型的默认能力。
+     * 例如 Agnes 同时支持文生图和图生图，其业务池默认为图生图时，
+     * 无参考图的 TEXT_TO_IMAGE 报价仍应投影到 text_to_image 能力。
+     */
+    static String imageCapabilityForPricing(String generateMode)
+    {
+        String normalized = Objects.toString(generateMode, "").trim().toUpperCase(Locale.ROOT);
+        return "TEXT_TO_IMAGE".equals(normalized) ? "text_to_image" : "image_to_image";
     }
 
     private MediaImageGenerateRequest buildPricingImageRequest(ImagePricingQuotePayload pricing,

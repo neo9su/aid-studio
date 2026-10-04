@@ -12,6 +12,7 @@ import com.aid.media.enums.MediaTaskStatus;
 import com.aid.media.enums.MediaType;
 import com.aid.media.event.MediaTaskCompletedEvent;
 import com.aid.media.event.MediaTaskOssPersistedEvent;
+import com.aid.compose.ComposeConstants;
 import com.aid.storyboard.service.IStoryboardVideoGenerationService;
 
 import cn.hutool.core.util.StrUtil;
@@ -48,6 +49,18 @@ public class StoryboardVideoGenEventListener
             return;
         }
         AidMediaTask mt = aidMediaTaskMapper.selectById(event.getTaskId());
+        if (isLongVideoComposeTask(mt))
+        {
+            if (MediaTaskStatus.FAILED.name().equals(mt.getStatus()))
+            {
+                storyboardVideoGenerationService.onLongVideoComposeTaskTerminal(mt.getId(), false, null);
+            }
+            else if (MediaTaskStatus.SUCCEEDED.name().equals(mt.getStatus()) && StrUtil.isNotBlank(mt.getOssUrl()))
+            {
+                storyboardVideoGenerationService.onLongVideoComposeTaskTerminal(mt.getId(), true, mt.getOssUrl());
+            }
+            return;
+        }
         if (!isVideoGenBizTask(mt))
         {
             return;
@@ -72,6 +85,14 @@ public class StoryboardVideoGenEventListener
             return;
         }
         AidMediaTask mt = aidMediaTaskMapper.selectById(event.getTaskId());
+        if (isLongVideoComposeTask(mt))
+        {
+            if (StrUtil.isNotBlank(mt.getOssUrl()))
+            {
+                storyboardVideoGenerationService.onLongVideoComposeTaskTerminal(mt.getId(), true, mt.getOssUrl());
+            }
+            return;
+        }
         if (!isVideoGenBizTask(mt))
         {
             return;
@@ -90,5 +111,13 @@ public class StoryboardVideoGenEventListener
                 && Objects.equals(MediaType.VIDEO.name(), mt.getMediaType())
                 && BIZ_TASK_TYPE_VIDEO_GEN.equals(mt.getBizTaskType())
                 && Objects.nonNull(mt.getBizTaskId());
+    }
+
+    private boolean isLongVideoComposeTask(AidMediaTask mt)
+    {
+        return Objects.nonNull(mt)
+                && ComposeConstants.MEDIA_TYPE_COMPOSE.equals(mt.getMediaType())
+                && ComposeConstants.CALLBACK_STORYBOARD_LONG_VIDEO.equals(mt.getCallbackCategory())
+                && Objects.nonNull(mt.getParentTaskId());
     }
 }

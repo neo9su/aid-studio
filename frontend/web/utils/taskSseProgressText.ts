@@ -100,6 +100,19 @@ function normalizePercent(p: unknown): number | undefined {
   return Math.min(100, Math.max(0, n))
 }
 
+/**
+ * UI 统一使用的任务展示进度：优先后端 ETA 的平滑预计值，其次使用上游真实进度。
+ * 没有可靠百分比时返回 undefined，调用方应展示不定进度而不是伪造数值。
+ */
+export function resolveTaskSseDisplayProgress(
+  p: Pick<TaskSseProgressInput, 'eta' | 'progress'> & { percent?: number }
+): number | undefined {
+  const etaPercent = normalizePercent(p.eta?.displayProgress)
+  if (etaPercent != null) return Math.round(etaPercent)
+  const progress = normalizePercent(p.progress ?? p.percent)
+  return progress == null ? undefined : Math.round(progress)
+}
+
 function normalizeEta(raw: unknown): TaskEtaProgress | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const o = raw as Record<string, unknown>

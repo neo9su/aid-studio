@@ -101,7 +101,8 @@ export function SceneCharacterProp(rawProps: SceneCharacterPropProps) {
     ctx.patchStore = (partial) => useCreationStore.setState(partial)
     ctx.emitUpdateModelValue = (v) => propsRef.current.onModelValueChange(v)
     ctx.emitStopExtract = () => propsRef.current.onStopExtract()
-    ctx.emitOpenExtractModal = (scope) => propsRef.current.onOpenExtractModal(scope)
+    ctx.emitOpenExtractModal = (scope, extractScope) =>
+      propsRef.current.onOpenExtractModal(scope, extractScope)
   }
   // Mirrored 状态每次渲染刷新 .value 快照
   Object.assign(ctx, mirroredState)

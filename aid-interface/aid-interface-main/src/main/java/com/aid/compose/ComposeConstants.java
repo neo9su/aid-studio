@@ -42,6 +42,9 @@ public final class ComposeConstants {
     /** 业务回填目标：接口2 成片回写 aid_episode_editor */
     public static final String CALLBACK_EPISODE_EDITOR = "episode_editor";
 
+    /** 分镜长视频自动分段合并，由分镜父任务监听器负责最终回写。 */
+    public static final String CALLBACK_STORYBOARD_LONG_VIDEO = "storyboard_long_video";
+
     /** aid_gen_record.gen_type 合成成片取值 */
     public static final String GEN_TYPE_COMPOSE = "compose";
 

@@ -50,15 +50,22 @@ export function createStoryboardVideoBatchSubmitFields(
     const durationSeconds = passDuration
       ? normalizePositiveInteger(options?.genDurationSeconds ?? settings.durationSeconds)
       : undefined
-    const resolution = formatVideoResolutionForApi(settings.resolution)
+    const hasExplicitModel = Boolean(
+      (options?.manualVideoModelPick ?? state.manualVideoModelPick) && modelName
+    )
+    const resolution = hasExplicitModel
+      ? formatVideoResolutionForApi(settings.resolution)
+      : undefined
     return {
-      ...((options?.manualVideoModelPick ?? state.manualVideoModelPick) && modelName
-        ? { genModelName: modelName }
+      ...(hasExplicitModel
+        ? {
+            genModelName: modelName,
+            genGenerateAudio: settings.soundEffects === 'with-sound'
+          }
         : {}),
       ...(settings.aspectRatio ? { genAspectRatio: settings.aspectRatio } : {}),
       ...(durationSeconds ? { genDurationSeconds: durationSeconds } : {}),
-      ...(resolution ? { genResolution: resolution } : {}),
-      genGenerateAudio: settings.soundEffects === 'with-sound'
+      ...(resolution ? { genResolution: resolution } : {})
     }
   }
 

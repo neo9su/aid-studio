@@ -82,7 +82,7 @@ export interface ScpDerivedApi {
   onScriptChangeDismissBanner: () => void
   blurScpAutoExtractButton: (event: React.MouseEvent) => void
   onClickAutoExtract: (scope: TabKey, event: React.MouseEvent) => void
-  handleAutoExtract: (scope: TabKey) => void
+  handleAutoExtract: (scope: TabKey | 'all') => void
   handleEmptyAssetAddClick: () => void
   handleBatchFormGenerateClick: () => void
   handleBatchImageGenerateClick: () => void

@@ -62,6 +62,85 @@ function okTerminalResult(
   }
 }
 
+/** 兜底轮询节奏：前台 25s / 后台 60s，总上限 6 小时防无限轮询。 */
+const TASK_TERMINAL_POLL_INTERVAL_MS = 25_000
+const TASK_TERMINAL_POLL_HIDDEN_INTERVAL_MS = 60_000
+const TASK_TERMINAL_POLL_MAX_MS = 6 * 60 * 60 * 1000
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * SSE 超时/断连但任务仍进行中时的周期兜底轮询：每 25s（后台 60s）查一次 task/detail，
+ * 进行中则用 detail.eta 回填进度让进度条继续推进，直到任务进入终态再返回。
+ * 根治「SSE 30 分钟硬超时后 UI 永久冻结在正在生成」的问题。
+ */
+export async function pollUntilTaskTerminal(
+  taskId: number,
+  onProgress?: (p: StoryboardVideoGenerateProgress) => void,
+  options?: { intervalMs?: number; maxMs?: number }
+): Promise<StoryboardVideoGenerateResult> {
+  const deadline = Date.now() + (options?.maxMs ?? TASK_TERMINAL_POLL_MAX_MS)
+
+  while (Date.now() < deadline) {
+    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    const interval =
+      options?.intervalMs ??
+      (hidden
+        ? TASK_TERMINAL_POLL_HIDDEN_INTERVAL_MS
+        : TASK_TERMINAL_POLL_INTERVAL_MS)
+    await sleepMs(interval)
+
+    let resolved
+    try {
+      resolved = await resolveUserTaskTerminalOutcome(taskId, { force: true })
+    } catch {
+      // 单次 detail 拉取失败（网络抖动）不中断轮询，下一轮重试
+      continue
+    }
+
+    if (resolved.kind === 'ongoing') {
+      const detail = resolved.detail ?? null
+      if (detail?.eta) {
+        onProgress?.({
+          taskId,
+          status: detail.status,
+          progress:
+            typeof detail.eta.displayProgress === 'number'
+              ? detail.eta.displayProgress
+              : undefined,
+          eta: detail.eta
+        })
+      }
+      continue
+    }
+
+    const detail = resolved.detail ?? null
+    if (resolved.kind === 'succeeded' || resolved.kind === 'partial_failed') {
+      return okTerminalResult(taskId, {
+        partial: resolved.kind === 'partial_failed',
+        data: terminalDataFromTaskDetail(detail?.resultData)
+      })
+    }
+    if (resolved.kind === 'cancelled') {
+      return { ok: false, errorMessage: resolved.message || '任务已取消' }
+    }
+    if (resolved.kind === 'failed') {
+      const msg = resolved.errorMessage || '视频生成失败'
+      openRechargeModalFromInsufficientBalance(msg)
+      return { ok: false, errorMessage: msg }
+    }
+  }
+
+  // 超过上限仍未终态：回到原有 deferred 语义（刷新页面可恢复）
+  return {
+    ok: false,
+    deferred: true,
+    errorMessage: '任务仍在后台执行，请稍候或刷新页面自动恢复进度'
+  }
+}
+
 export async function followStoryboardVideoGenerateTask(payload: {
   taskId: number
   onProgress?: (p: StoryboardVideoGenerateProgress) => void
@@ -144,11 +223,8 @@ export async function followStoryboardVideoGenerateTask(payload: {
       }
       const ongoing = await isUserOrMediaTaskOngoing(taskId)
       if (!ongoing) return okTerminalResult(taskId, { data: terminalDataFromTaskDetail(detail?.resultData) })
-      return {
-        ok: false,
-        deferred: true,
-        errorMessage: '任务仍在后台执行，请稍候或刷新页面自动恢复进度'
-      }
+      // SSE 超时/断连但任务仍在后台执行：进入周期兜底轮询，避免 UI 永久冻结。
+      return await pollUntilTaskTerminal(taskId, payload.onProgress)
     }
 
     const r = terminal.event

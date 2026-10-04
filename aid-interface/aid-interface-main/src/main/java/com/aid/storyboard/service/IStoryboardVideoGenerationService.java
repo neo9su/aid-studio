@@ -118,6 +118,9 @@ public interface IStoryboardVideoGenerationService
      */
     void onMediaVideoTaskTerminal(Long mediaTaskId, boolean success, String ossUrl);
 
+    /** 长视频片段合并任务终态回调。 */
+    void onLongVideoComposeTaskTerminal(Long mediaTaskId, boolean success, String ossUrl);
+
     /**
      * 扇入收尾（幂等）：父任务全部子任务到齐时置终态、推 SSE、释放锁与并发名额。
      *

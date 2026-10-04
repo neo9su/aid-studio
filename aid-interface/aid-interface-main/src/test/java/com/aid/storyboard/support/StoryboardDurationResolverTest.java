@@ -2,6 +2,7 @@ package com.aid.storyboard.support;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +48,23 @@ class StoryboardDurationResolverTest
         assertEquals(8, StoryboardDurationResolver.resolveModelDefaultDuration(capabilityDefault));
         assertEquals(8, StoryboardDurationResolver.resolveModelDefaultDuration(tableDefault));
         assertEquals(8, StoryboardDurationResolver.resolveModelDefaultDuration(firstOption));
+    }
+
+    @Test
+    void shouldAllowExplicitLongDurationOnlyForAutoSplitModels()
+    {
+        AiModelConfigVo agnes = model("[5,8,12]", 5, 5);
+        agnes.setProviderCode("agnes");
+        agnes.setModelCode("agnes-video-2.5-flash");
+        assertEquals(24, StoryboardDurationResolver.resolve(24, null, false, true, agnes).durationSeconds());
+
+        AiModelConfigVo other = model("[5,8,12]", 5, 5);
+        other.setProviderCode("other");
+        other.setModelCode("other-video");
+        assertThrows(RuntimeException.class,
+                () -> StoryboardDurationResolver.resolve(24, null, false, true, other));
+        assertThrows(RuntimeException.class,
+                () -> StoryboardDurationResolver.resolve(25, null, false, true, agnes));
     }
 
     private AiModelConfigVo model(String options, Integer capabilityDefault, Integer tableDefault)

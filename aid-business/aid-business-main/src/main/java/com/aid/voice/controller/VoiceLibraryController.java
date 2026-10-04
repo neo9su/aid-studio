@@ -3,6 +3,7 @@ package com.aid.voice.controller;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.aid.common.core.controller.BaseController;
 import com.aid.common.core.domain.AjaxResult;
+import com.aid.common.utils.SecurityUtils;
 import com.aid.voice.dto.VoiceLibraryListRequest;
 import com.aid.voice.service.IVoiceLibraryBusinessService;
 import com.aid.voice.vo.VoiceLibraryVO;
@@ -34,7 +35,7 @@ public class VoiceLibraryController extends BaseController
     @PostMapping("/list")
     public AjaxResult list(@RequestBody VoiceLibraryListRequest request)
     {
-        IPage<VoiceLibraryVO> page = voiceLibraryBusinessService.listForClient(request);
+        IPage<VoiceLibraryVO> page = voiceLibraryBusinessService.listForClient(request, SecurityUtils.getUserId());
         AjaxResult ajax = AjaxResult.success();
         ajax.put("data", page.getRecords());
         ajax.put("total", page.getTotal());

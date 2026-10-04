@@ -7,6 +7,8 @@ import com.aid.media.constants.AgnesConstants;
 import com.aid.media.dto.MediaVideoGenerateRequest;
 import com.aid.media.dto.ReferenceAudioInput;
 import com.aid.media.provider.ModelCodeResolver;
+import com.aid.media.provider.ReferenceImageBase64Support;
+import com.aid.media.provider.Agnes25PromptAdapter;
 import com.aid.media.provider.ReferencePromptSanitizer;
 
 import java.math.BigDecimal;
@@ -112,6 +114,7 @@ public final class AgnesVideo25RequestBuilder {
         String mode = resolveMode(request, inputs);
         List<String> images = "reference".equals(mode)
                 ? referenceImages(request, inputs) : new ArrayList<>();
+        images = prepareImages(modelConfig, images);
         List<Map<String, Object>> videos = "reference".equals(mode)
                 ? buildVideos(request, inputs.videos()) : new ArrayList<>();
         List<String> audios = "reference".equals(mode)
@@ -120,8 +123,9 @@ public final class AgnesVideo25RequestBuilder {
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", modelName);
-        body.put("prompt", ReferencePromptSanitizer.sanitizeForAgnes25(
-                request.getPrompt(), images.size(), videos.size(), audios.size()));
+        body.put("prompt", Agnes25PromptAdapter.reformatToNatural(
+                ReferencePromptSanitizer.sanitizeForAgnes25(
+                        request.getPrompt(), images.size(), videos.size(), audios.size())));
         body.put("seconds", String.valueOf(duration(request)));
         body.put("mode", mode);
         body.put("size", size(request));
@@ -133,10 +137,10 @@ public final class AgnesVideo25RequestBuilder {
         }
         if ("keyframe".equals(mode)) {
             if (StrUtil.isNotBlank(request.getImageUrl())) {
-                body.put("first_frame", request.getImageUrl());
+                body.put("first_frame", prepareImage(modelConfig, request.getImageUrl()));
             }
             if (StrUtil.isNotBlank(inputs.lastFrame())) {
-                body.put("last_frame", inputs.lastFrame());
+                body.put("last_frame", prepareImage(modelConfig, inputs.lastFrame()));
             }
         } else if ("reference".equals(mode)) {
             if (!images.isEmpty()) {
@@ -150,6 +154,18 @@ public final class AgnesVideo25RequestBuilder {
             }
         }
         return body;
+    }
+
+    private static List<String> prepareImages(AiModelConfigVo modelConfig, List<String> images) {
+        if (ReferenceImageBase64Support.isBase64Enabled(modelConfig)) {
+            return ReferenceImageBase64Support.toDataUris(images);
+        }
+        return ReferenceImageBase64Support.inlineLocalProfileImages(images);
+    }
+
+    private static String prepareImage(AiModelConfigVo modelConfig, String image) {
+        List<String> prepared = prepareImages(modelConfig, List.of(image));
+        return prepared.isEmpty() ? image : prepared.get(0);
     }
 
     public static String appendModelName(String queryUrl, String modelName) {

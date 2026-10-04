@@ -88,6 +88,39 @@ function taskStatusUpper(task: UserTaskRow): string {
   return String(task?.status ?? '').toUpperCase()
 }
 
+/** 进行中任务 updateTime 超过该分钟数未更新 → 标注「可能卡住」 */
+const TASK_STALE_THRESHOLD_MIN = 30
+
+/** 健壮解析任务 updateTime（支持秒/毫秒时间戳与常见日期格式） */
+function parseTaskUpdateMs(raw: string | null | undefined): number | null {
+  if (!raw) return null
+  const s = String(raw).trim()
+  if (!s) return null
+  if (/^\d{10}$/.test(s)) return Number(s) * 1000
+  if (/^\d{13}$/.test(s)) return Number(s)
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/)
+  if (m) {
+    return new Date(
+      Number(m[1]),
+      Number(m[2]) - 1,
+      Number(m[3]),
+      Number(m[4]),
+      Number(m[5]),
+      Number(m[6] || 0)
+    ).getTime()
+  }
+  const t = Date.parse(s)
+  return Number.isFinite(t) ? t : null
+}
+
+/** 进行中任务「最后更新距今」分钟数；无法解析返回 null（不标注，避免误报） */
+function taskStaleMin(task: UserTaskRow, nowMs: number): number | null {
+  const ms = parseTaskUpdateMs(task.updateTime)
+  if (ms == null || !Number.isFinite(ms)) return null
+  const min = Math.floor((nowMs - ms) / 60000)
+  return min >= 0 ? min : null
+}
+
 function mergeTaskRows(existing: UserTaskRow[], incoming: UserTaskRow[]): UserTaskRow[] {
   const seen = new Set<number>()
   const merged: UserTaskRow[] = []
@@ -159,6 +192,8 @@ export function GlobalGenerateTaskPopover({
   const [partialTaskList, setPartialTaskList] = useState<UserTaskRow[]>([])
   const [cancelledTaskList, setCancelledTaskList] = useState<UserTaskRow[]>([])
   const [failedTaskList, setFailedTaskList] = useState<UserTaskRow[]>([])
+  // 「进行中」任务停滞标注的时间基准：每 30s 刷新一次（仅在有面板任务时）
+  const [taskStaleNowMs, setTaskStaleNowMs] = useState(Date.now())
 
   const suppressScrollPaginationRef = useRef(false)
   const projectIdRef = useRef(projectId)
@@ -410,6 +445,12 @@ export function GlobalGenerateTaskPopover({
   }
 
   useEffect(() => {
+    if (!hasAnyPanelTask) return
+    const timer = setInterval(() => setTaskStaleNowMs(Date.now()), 30_000)
+    return () => clearInterval(timer)
+  }, [hasAnyPanelTask])
+
+  useEffect(() => {
     if (!panelOpen) return
     void (async () => {
       await loadTasksPage(true, { allowFillScroll: true, forceNetwork: true })
@@ -501,6 +542,15 @@ export function GlobalGenerateTaskPopover({
                     <div className="global-task-panel__item-main">
                       <div className="global-task-panel__name">{taskTypeLabel(task.taskType)}</div>
                       <div className="global-task-panel__model">模型：{task.modelCode || '-'}</div>
+                      {(() => {
+                        const sm = taskStaleMin(task, taskStaleNowMs)
+                        if (sm == null || sm < TASK_STALE_THRESHOLD_MIN) return null
+                        return (
+                          <div className="global-task-panel__stale">
+                            ⚠ 已 {sm} 分钟未更新，可能卡住
+                          </div>
+                        )
+                      })()}
                     </div>
                     <div className="global-task-panel__ops">
                       {showTaskStop(task) ? (

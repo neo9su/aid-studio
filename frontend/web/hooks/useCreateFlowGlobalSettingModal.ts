@@ -148,7 +148,8 @@ export function useCreateFlowGlobalSettingModal() {
 
         const updatePayload: UserProjectUpdateRequest = {
           id: pid,
-          projectName: finalTitle
+          projectName: finalTitle,
+          complianceProfile: finalGlobalSetting.complianceProfile
         }
         if (!contentConfigLocked) {
           Object.assign(updatePayload, {

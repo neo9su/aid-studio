@@ -160,7 +160,7 @@ INSERT INTO `aid_ai_model` (
 (@agnes25_provider_id,'agnes-video-2.5-flash','agnes-video-2.5-flash','Agnes Video 2.5 Flash','video','image_to_video',0,1,
  '/v1/videos','agnes-video',130,'1','0',NOW(),'system',NOW(),'system',
  'Agnes Video 2.5 Flash；720P、4-12秒、参考图最多5张、禁止参考视频；当前限时免费；默认停用',
- 'SKU',@agnes25_flash_billing_rule,7,'{"maxConcurrency":1}',1,0,1,1,1,1,1,1,1,1,1,'720P','16:9',5,
+ 'SKU',@agnes25_flash_billing_rule,7,'{"maxConcurrency":4}',1,0,1,1,1,1,1,1,1,1,1,'720P','16:9',5,
  @agnes25_flash_capability,1,'https://wiki.agnes-ai.cn',1)
 ON DUPLICATE KEY UPDATE
   `provider_id`=VALUES(`provider_id`),`real_model_code`=VALUES(`real_model_code`),`model_name`=VALUES(`model_name`),
