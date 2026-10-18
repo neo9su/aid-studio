@@ -4,6 +4,8 @@
 
 所有本地GPU任务先提交到统一API。调用方只选择管理员允许的任务模板（profile），不能提交Shell命令、访问GPU设备、直接调用ComfyUI或停止GPU服务。GPU节点Agent是唯一执行者。
 
+业务客户端和其它 AI Agent 的接入步骤见 [GPU 资源调度：客户端与 AI Agent 调用指导书](gpu-resource-agent-client-guide.md)。
+
 第一阶段只部署控制面和只读/空跑Agent。确认排队、租约、保温、释放和故障恢复无误后，再收紧222上的SSH、设备与服务权限。
 
 ## 当前部署状态（2026-10-17）
