@@ -18,7 +18,8 @@
 截至 2026-10-18，`gpu-222` 已完成 H3 768P 多参考图运行时 A/B 验收，
 但生产仍使用 torch 2.8/cu128；torch 2.9.1/cu130 候选需管理员明确确认后
 才会切换。`gpu-203` 仍为 `observe`，不得由客户端直接指定或绕过调度器
-调用。详细证据见 [H3 768P runtime A/B](benchmarks/h3-runtime-ab-3090-2026-10-18.md)。
+调用。A/B 完成后的调度任务 57 已验证 GPU1 FastH3 并恢复 6 小时热驻留。
+详细证据见 [H3 768P runtime A/B](benchmarks/h3-runtime-ab-3090-2026-10-18.md)。
 
 ## 2. 调用架构
 
