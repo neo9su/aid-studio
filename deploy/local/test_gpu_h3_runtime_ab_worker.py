@@ -18,6 +18,21 @@ class H3RuntimeAbWorkerTest(unittest.TestCase):
         self.assertEqual("480P", result["resolution"])
         self.assertEqual(1, result["warmRuns"])
         self.assertEqual(["torch-2.8-cu128"], result["targets"])
+        self.assertEqual([], result["referenceImages"])
+
+    def test_accepts_multi_reference_images(self):
+        result = worker.validated(self.job(
+            resolution="768P", duration=5, steps=20, warmRuns=2,
+            referenceImages=["fs_024.png", "fs_023.png"],
+        ))
+        self.assertEqual(["fs_024.png", "fs_023.png"], result["referenceImages"])
+
+    def test_rejects_unsafe_reference_image_name(self):
+        with self.assertRaisesRegex(RuntimeError, "unsafe image name"):
+            worker.validated(self.job(
+                resolution="768P", duration=5, steps=20, warmRuns=1,
+                referenceImages=["../fs_024.png", "fs_023.png"],
+            ))
 
     def test_rejects_acceleration_step_change(self):
         with self.assertRaisesRegex(RuntimeError, "unsupported benchmark parameters"):

@@ -11,6 +11,24 @@ import urllib.request
 import uuid
 
 
+STANDARD_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+REFERENCE_MODEL = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+DEFAULT_TEXT_PROMPT = (
+    "Photorealistic cinematic shot inside a modest rural Chinese home. A 30-year-old "
+    "Chinese man in a plain white shirt walks from a wooden door toward a table, pauses, "
+    "and turns toward warm window light. Slow lateral camera track, stable eyes and hands, "
+    "realistic skin, coherent motion, no text. Audio: soft footsteps and distant birds."
+)
+DEFAULT_REFERENCE_PROMPT = (
+    "Use <Picture 1> as the exact identity, face and hairstyle of the adult Chinese man. "
+    "Use <Picture 2> as the exact identity, face and hairstyle of the adult Chinese woman. "
+    "Both adults stand beside a rural river in summer. The man turns toward the woman and "
+    "opens one hand while speaking; she meets his gaze and smiles subtly. Medium two-shot, "
+    "both faces and both hands visible, natural eye direction, realistic skin, coherent "
+    "motion, gentle stable camera move, no text. Audio: river water and cicadas."
+)
+
+
 def request_json(url: str, payload: dict | None = None, timeout: int = 60) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -30,9 +48,10 @@ def frame_count(duration: float) -> int:
 
 
 def build_prompt(args: argparse.Namespace) -> dict:
-    return {
+    reference_images = list(getattr(args, "reference_images", None) or [])
+    graph = {
         "1": {"class_type": "UNETLoader", "inputs": {
-            "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+            "unet_name": REFERENCE_MODEL if reference_images else STANDARD_MODEL,
             "weight_dtype": "default"}},
         "2": {"class_type": "MiniMaxH3SigmaShift", "inputs": {
             "model": ["1", 0], "shift_video": 12.0, "shift_audio": 3.0}},
@@ -42,10 +61,15 @@ def build_prompt(args: argparse.Namespace) -> dict:
         "4": {"class_type": "VAELoaderKJ", "inputs": {
             "vae_name": "minimax_h3_video_vae_fp16.safetensors",
             "device": "main_device", "weight_dtype": "fp16"}},
-        "6": {"class_type": "MiniMaxH3ImageToVideo", "inputs": {
+        "6": {"class_type": (
+            "MiniMaxH3ReferenceToVideo" if reference_images else "MiniMaxH3ImageToVideo"
+        ), "inputs": {
             "clip": ["3", 0], "vae": ["4", 0], "prompt": args.prompt,
             "width": args.width, "height": args.height,
-            "length": frame_count(args.duration)}},
+            "length": frame_count(args.duration),
+            **({"audio_vae": ["16", 0], "ref_image_size": "match"}
+               if reference_images else {}),
+        }},
         "7": {"class_type": "RandomNoise", "inputs": {"noise_seed": args.seed}},
         "8": {"class_type": "KSamplerSelect", "inputs": {
             "sampler_name": "res_multistep"}},
@@ -74,6 +98,11 @@ def build_prompt(args: argparse.Namespace) -> dict:
         "17": {"class_type": "VAEDecodeAudio", "inputs": {
             "samples": ["13", 1], "vae": ["16", 0]}},
     }
+    for index, image_name in enumerate(reference_images):
+        node_id = str(18 + index)
+        graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": image_name}}
+        graph["6"]["inputs"][f"ref_images.ref_image_{index}"] = [node_id, 0]
+    return graph
 
 
 def unique_node_ids(prompt: dict) -> dict:
@@ -116,15 +145,17 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20261017)
     parser.add_argument("--prefix", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=7200)
-    parser.add_argument("--prompt", default=(
-        "Photorealistic cinematic shot inside a modest rural Chinese home. A 30-year-old "
-        "Chinese man in a plain white shirt walks from a wooden door toward a table, pauses, "
-        "and turns toward warm window light. Slow lateral camera track, stable eyes and hands, "
-        "realistic skin, coherent motion, no text. Audio: soft footsteps and distant birds."
-    ))
+    parser.add_argument("--reference-image", dest="reference_images", action="append")
+    parser.add_argument("--prompt")
     args = parser.parse_args()
     if (args.width, args.height) not in {(832, 480), (1344, 768)}:
         raise SystemExit("only validated 16:9 canvases are allowed")
+    args.reference_images = args.reference_images or []
+    if args.reference_images and not 2 <= len(args.reference_images) <= 3:
+        raise SystemExit("multi-reference validation requires two or three images")
+    args.prompt = args.prompt or (
+        DEFAULT_REFERENCE_PROMPT if args.reference_images else DEFAULT_TEXT_PROMPT
+    )
 
     base_url = args.url.rstrip("/")
     started = time.monotonic()
@@ -146,6 +177,8 @@ def main() -> None:
                 "runtime": args.runtime, "steps": args.steps,
                 "width": args.width, "height": args.height,
                 "frames": frame_count(args.duration), "seed": args.seed,
+                "inputMode": "multi-reference-image" if args.reference_images else "text",
+                "referenceImages": args.reference_images,
                 "output": output_ref(result),
             }, ensure_ascii=False, separators=(",", ":")))
             return

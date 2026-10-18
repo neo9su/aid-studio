@@ -15,7 +15,7 @@ class RuntimeAbBenchmarkTest(unittest.TestCase):
     def args(self):
         return Namespace(
             width=832, height=480, duration=4.0, steps=20, seed=20261017,
-            prompt="fixed", prefix="test",
+            prompt="fixed", prefix="test", reference_images=[],
         )
 
     def test_uses_production_graph_without_shadow_only_nodes(self):
@@ -25,6 +25,16 @@ class RuntimeAbBenchmarkTest(unittest.TestCase):
         self.assertNotIn("H3BenchmarkForceRun", classes)
         self.assertIn("MiniMaxH3ImageToVideo", classes)
         self.assertIn("VAEDecodeTiled", classes)
+
+    def test_multi_reference_uses_production_reference_graph(self):
+        args = self.args()
+        args.reference_images = ["fs_024.png", "fs_023.png"]
+        graph = benchmark.build_prompt(args)
+        self.assertEqual(benchmark.REFERENCE_MODEL, graph["1"]["inputs"]["unet_name"])
+        self.assertEqual("MiniMaxH3ReferenceToVideo", graph["6"]["class_type"])
+        self.assertEqual(["18", 0], graph["6"]["inputs"]["ref_images.ref_image_0"])
+        self.assertEqual(["19", 0], graph["6"]["inputs"]["ref_images.ref_image_1"])
+        self.assertEqual(["16", 0], graph["6"]["inputs"]["audio_vae"])
 
     def test_frame_count_matches_h3_constraint(self):
         self.assertEqual(107, benchmark.frame_count(4.0))

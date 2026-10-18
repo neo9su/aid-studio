@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -79,6 +81,7 @@ def validated(job: dict) -> dict:
     steps = int(benchmark.get("steps") or 20)
     warm_runs = int(benchmark.get("warmRuns") or 1)
     targets = benchmark.get("targets") or [name for name, _ in RUNTIMES]
+    reference_images = benchmark.get("referenceImages") or []
     if resolution not in {"480P", "768P"}:
         raise RuntimeError("unsupported benchmark resolution")
     if duration not in {4, 5} or steps != 20 or warm_runs not in {1, 2}:
@@ -87,10 +90,65 @@ def validated(job: dict) -> dict:
             or any(name not in RUNTIME_NAMES for name in targets)
             or len(set(targets)) != len(targets)):
         raise RuntimeError("unsupported benchmark runtime targets")
+    if not isinstance(reference_images, list) or len(reference_images) not in {0, 2, 3}:
+        raise RuntimeError("referenceImages must contain zero, two, or three images")
+    for name in reference_images:
+        if (not isinstance(name, str) or not name or Path(name).name != name
+                or Path(name).suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}):
+            raise RuntimeError("referenceImages contains an unsafe image name")
     return {
         "resolution": resolution, "duration": duration,
         "steps": steps, "warmRuns": warm_runs, "targets": targets,
+        "referenceImages": reference_images,
     }
+
+
+def _gpu_sample() -> dict | None:
+    command = [
+        "nvidia-smi", "--query-gpu=utilization.gpu,memory.used,power.draw,clocks.sm",
+        "--format=csv,noheader,nounits", "--id=0",
+    ]
+    result = subprocess.run(command, text=True, capture_output=True, check=False, timeout=10)
+    if result.returncode != 0:
+        return None
+    values = [item.strip() for item in result.stdout.strip().split(",")]
+    if len(values) != 4:
+        return None
+    return dict(zip(("utilizationPercent", "memoryUsedMb", "powerW", "smClockMhz"),
+                    (float(value) for value in values)))
+
+
+def _host_sample() -> dict:
+    memory = {}
+    for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+        key, _, raw = line.partition(":")
+        if key in {"MemAvailable", "SwapTotal", "SwapFree"}:
+            memory[key] = int(raw.strip().split()[0]) / 1024
+    return {
+        "load1": os.getloadavg()[0],
+        "memoryAvailableMb": memory.get("MemAvailable", 0),
+        "swapUsedMb": memory.get("SwapTotal", 0) - memory.get("SwapFree", 0),
+    }
+
+
+def _summarize(samples: list[dict]) -> dict:
+    if not samples:
+        return {"sampleCount": 0}
+    gpu = [sample["gpu"] for sample in samples if sample.get("gpu")]
+    summary = {"sampleCount": len(samples)}
+    for key in ("utilizationPercent", "memoryUsedMb", "powerW", "smClockMhz"):
+        values = [sample[key] for sample in gpu]
+        if values:
+            summary[key] = {"average": round(sum(values) / len(values), 2),
+                            "peak": round(max(values), 2)}
+    summary["minimumMemoryAvailableMb"] = round(min(
+        sample["host"]["memoryAvailableMb"] for sample in samples
+    ), 2)
+    summary["peakSwapUsedMb"] = round(max(
+        sample["host"]["swapUsedMb"] for sample in samples
+    ), 2)
+    summary["peakLoad1"] = round(max(sample["host"]["load1"] for sample in samples), 2)
+    return summary
 
 
 def run_once(runtime: str, url: str, item: dict, phase: str, seed: int,
@@ -104,10 +162,29 @@ def run_once(runtime: str, url: str, item: dict, phase: str, seed: int,
         "--timeout-seconds", str(timeout_seconds),
         "--prefix", f"h3-runtime-ab/{runtime}/{phase}",
     ]
-    result = subprocess.run(
-        command, text=True, capture_output=True,
-        timeout=timeout_seconds + 120, check=False,
-    )
+    for image_name in item["referenceImages"]:
+        command.extend(["--reference-image", image_name])
+    samples: list[dict] = []
+    stop = threading.Event()
+
+    def sample_metrics() -> None:
+        while not stop.is_set():
+            try:
+                samples.append({"gpu": _gpu_sample(), "host": _host_sample()})
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+            stop.wait(5)
+
+    sampler = threading.Thread(target=sample_metrics, daemon=True)
+    sampler.start()
+    try:
+        result = subprocess.run(
+            command, text=True, capture_output=True,
+            timeout=timeout_seconds + 120, check=False,
+        )
+    finally:
+        stop.set()
+        sampler.join(timeout=10)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "benchmark failed")[-4_000:])
     lines = [line for line in result.stdout.splitlines() if line.strip()]
@@ -115,6 +192,7 @@ def run_once(runtime: str, url: str, item: dict, phase: str, seed: int,
         raise RuntimeError("benchmark returned no result")
     output = json.loads(lines[-1])
     output["phase"] = phase
+    output["metrics"] = _summarize(samples)
     return output
 
 
@@ -150,6 +228,8 @@ def main() -> None:
     refs = [entry["output"] for entry in results if isinstance(entry.get("output"), dict)]
     print(json.dumps({
         "experiment": "runtime-ab", "results": results,
+        "inputMode": ("multi-reference-image" if item["referenceImages"] else "text"),
+        "referenceImages": item["referenceImages"],
         "resultRefs": refs, "resultRef": json.dumps(refs, ensure_ascii=False),
     }, ensure_ascii=False, separators=(",", ":")))
 
