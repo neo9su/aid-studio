@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 
 
 STANDARD_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
@@ -20,12 +22,14 @@ DEFAULT_TEXT_PROMPT = (
     "realistic skin, coherent motion, no text. Audio: soft footsteps and distant birds."
 )
 DEFAULT_REFERENCE_PROMPT = (
-    "Use <Picture 1> as the exact identity, face and hairstyle of the adult Chinese man. "
-    "Use <Picture 2> as the exact identity, face and hairstyle of the adult Chinese woman. "
-    "Both adults stand beside a rural river in summer. The man turns toward the woman and "
-    "opens one hand while speaking; she meets his gaze and smiles subtly. Medium two-shot, "
+    "Use <Picture 1> as the exact identity, face, wavy black hair, dark suit, white shirt and "
+    "dark tie of the adult Chinese man. Use <Picture 2> as the exact identity, face, long "
+    "black hair, pale floral blouse and black trousers of the adult Chinese woman. Both adults "
+    "stand in the same sunlit rural courtyard beside a wooden wash basin. The man turns toward "
+    "the woman and opens one hand while speaking; she meets his gaze and smiles subtly. "
+    "Medium two-shot, "
     "both faces and both hands visible, natural eye direction, realistic skin, coherent "
-    "motion, gentle stable camera move, no text. Audio: river water and cicadas."
+    "motion, gentle stable camera move, no text. Audio: birds, cicadas and a soft water trickle."
 )
 
 
@@ -45,6 +49,17 @@ def request_json(url: str, payload: dict | None = None, timeout: int = 60) -> di
 def frame_count(duration: float) -> int:
     frames = max(5, round(duration * 24))
     return min(362, frames + (5 - frames % 17) % 17)
+
+
+def reference_hashes(reference_images: list[str], input_root: Path = Path("input")) -> list[str]:
+    hashes = []
+    for image_name in reference_images:
+        digest = hashlib.sha256()
+        with (input_root / image_name).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        hashes.append(digest.hexdigest())
+    return hashes
 
 
 def build_prompt(args: argparse.Namespace) -> dict:
@@ -179,6 +194,7 @@ def main() -> None:
                 "frames": frame_count(args.duration), "seed": args.seed,
                 "inputMode": "multi-reference-image" if args.reference_images else "text",
                 "referenceImages": args.reference_images,
+                "referenceHashes": reference_hashes(args.reference_images),
                 "output": output_ref(result),
             }, ensure_ascii=False, separators=(",", ":")))
             return

@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -39,6 +40,20 @@ class RuntimeAbBenchmarkTest(unittest.TestCase):
     def test_frame_count_matches_h3_constraint(self):
         self.assertEqual(107, benchmark.frame_count(4.0))
         self.assertEqual(124, benchmark.frame_count(5.0))
+
+    def test_reference_hashes_preserve_input_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.png").write_bytes(b"a")
+            (root / "b.png").write_bytes(b"b")
+            hashes = benchmark.reference_hashes(["b.png", "a.png"], root)
+        self.assertEqual(
+            [
+                "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+                "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+            ],
+            hashes,
+        )
 
     def test_unique_ids_preserve_graph_links(self):
         graph = benchmark.build_prompt(self.args())
