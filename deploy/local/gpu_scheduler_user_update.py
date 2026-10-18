@@ -32,7 +32,8 @@ def health_ok(url: str = "http://127.0.0.1:18120/health", attempts: int = 20) ->
     return False
 
 
-def update_user(source_root: Path, preflight: Path, token: str, home: Path) -> Path:
+def update_user(source_root: Path, preflight: Path, token: str, home: Path,
+                preserve_config: bool = False) -> Path:
     validate_preflight(preflight, token)
     install_root = home / ".local/share/aid-gpu-scheduler"
     config_root = home / ".config/aid-gpu-scheduler"
@@ -40,9 +41,12 @@ def update_user(source_root: Path, preflight: Path, token: str, home: Path) -> P
     targets = {
         "gpu_resource_manager.py": install_root / "gpu_resource_manager.py",
         "gpu_resource_agent.py": install_root / "gpu_resource_agent.py",
-        "gpu-resource-profiles.gpu-222.json": config_root / "profiles.json",
-        "gpu-resource-services.gpu-222.json": config_root / "services.json",
     }
+    if not preserve_config:
+        targets.update({
+            "gpu-resource-profiles.gpu-222.json": config_root / "profiles.json",
+            "gpu-resource-services.gpu-222.json": config_root / "services.json",
+        })
     for name, target in targets.items():
         if not (source_root / name).is_file() or not target.is_file():
             raise DeployError(f"missing update source or installed target: {name}")
@@ -59,7 +63,7 @@ def update_user(source_root: Path, preflight: Path, token: str, home: Path) -> P
 
     manifest = backup_root / "manifest.json"
     manifest.write_text(json.dumps({
-        "scope": "user", "stage": "control-plane-safety-update",
+        "scope": "user", "stage": "control-plane-code-update" if preserve_config else "control-plane-safety-update",
         "createdAt": time.time(), "approvalToken": token, "files": records,
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -92,11 +96,15 @@ def main() -> None:
     parser.add_argument("--preflight", required=True)
     parser.add_argument("--approval-token", required=True)
     parser.add_argument("--home", default=str(Path.home()))
+    parser.add_argument(
+        "--preserve-config", action="store_true",
+        help="update Manager and Agent code without replacing live profile/service policy",
+    )
     args = parser.parse_args()
     try:
         manifest = update_user(
             Path(args.source_root).resolve(), Path(args.preflight).resolve(),
-            args.approval_token, Path(args.home).resolve(),
+            args.approval_token, Path(args.home).resolve(), args.preserve_config,
         )
         print(json.dumps({"updated": True, "rollbackManifest": str(manifest)}, ensure_ascii=False))
     except DeployError as exc:

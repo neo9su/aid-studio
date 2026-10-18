@@ -48,6 +48,20 @@ class UserControlPlaneUpdateTest(unittest.TestCase):
         self.assertEqual("new-services", (self.config / "services.json").read_text())
         self.assertTrue(manifest.is_file())
 
+    @patch("gpu_scheduler_user_update.health_ok", return_value=True)
+    @patch("gpu_scheduler_user_update.run")
+    @patch("gpu_scheduler_user_update.validate_preflight")
+    def test_code_only_update_preserves_live_policy(self, validate, run, _health):
+        manifest = update_user(
+            self.source, self.preflight, "approved", self.home, preserve_config=True,
+        )
+
+        self.assertEqual("new-manager", (self.install / "gpu_resource_manager.py").read_text())
+        self.assertEqual("new-agent", (self.install / "gpu_resource_agent.py").read_text())
+        self.assertEqual("old-profiles", (self.config / "profiles.json").read_text())
+        self.assertEqual("old-services", (self.config / "services.json").read_text())
+        self.assertIn("control-plane-code-update", manifest.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
