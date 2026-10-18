@@ -54,6 +54,9 @@ AID_GPU_MANAGER_CA_FILE=/etc/aid-gpu/ca.crt
 
 当前 Manager 若仍只监听 `127.0.0.1:18120`，外部客户端不得尝试直连；应等待管理员发布受 TLS 保护的统一地址。
 
+面向其它 AI Agent 的可直接复制版本、当前 H3 payload 示例以及 203 开放
+流程，见 [GPU Resource Manager：其它客户端与 AI Agent 执行手册](gpu-resource-agent-execution-guide.md)。
+
 ## 4. AI Agent 的强制行为规则
 
 将以下规则加入需要 GPU 的 AI Agent 系统说明：
@@ -100,9 +103,14 @@ curl -sS --cacert "$AID_GPU_MANAGER_CA_FILE" \
     "profile": "h3-single-fast",
     "idempotencyKey": "project-26-shot-18-preview-v1",
     "payload": {
-      "projectId": 26,
-      "shotId": 18,
-      "requestRef": "aid://video/981"
+      "videoRequest": {
+        "model": "MiniMax-H3",
+        "duration": 5,
+        "resolution": "480P",
+        "ratio": "16:9",
+        "acceleration": "fast_vsa",
+        "content": [{"type":"text","text":"A cinematic sunrise"}]
+      }
     }
   }'
 ```
@@ -161,9 +169,14 @@ job = client.submit(
     profile=profile,
     idempotency_key="project-26-shot-18-preview-v1",
     payload={
-        "projectId": 26,
-        "shotId": 18,
-        "requestRef": "aid://video/981",
+        "videoRequest": {
+            "model": "MiniMax-H3",
+            "duration": 5,
+            "resolution": "480P",
+            "ratio": "16:9",
+            "acceleration": "fast_vsa",
+            "content": [{"type": "text", "text": "A cinematic sunrise"}],
+        },
     },
 )
 

@@ -2,7 +2,11 @@
 
 ## 接入状态
 
-阶段一已在 `10.190.0.222` 以用户服务运行，但仅监听 `127.0.0.1:18120`，Agent 为观察模式，生产 profile 尚未启用。其它主机或容器必须等待管理员配置 TLS 反向代理、项目专属密钥、固定节点适配器和防火墙后才能调用。
+`gpu-222` 当前以 `enforce` 模式提供已验收的生产 profile；`gpu-203`
+已登记但仍为 `observe`，不能领取任务。其它主机或容器必须使用管理员发布
+的 TLS 入口、项目专属密钥、CA 和防火墙白名单，不能直接连接节点 IP 或
+私有推理端口。面向 AI Agent 的完整执行模板见
+[GPU Resource Manager：其它客户端与 AI Agent 执行手册](gpu-resource-agent-execution-guide.md)。
 
 外部启用时必须配置明确的 `GPU_MANAGER_ALLOWED_CIDRS`；不接受为了省事设置 `0.0.0.0/0`。来源不在允许网段时返回 `SOURCE_NOT_ALLOWED`。
 
@@ -40,9 +44,14 @@ curl -sS --cacert "$AID_GPU_MANAGER_CA_FILE" -X POST "$AID_GPU_MANAGER_URL/v1/jo
     "profile": "h3-single-fast",
     "idempotencyKey": "project-26-shot-18-v1",
     "payload": {
-      "projectId": 26,
-      "shotId": 18,
-      "requestRef": "aid://video/981"
+      "videoRequest": {
+        "model": "MiniMax-H3",
+        "duration": 5,
+        "resolution": "480P",
+        "ratio": "16:9",
+        "acceleration": "fast_vsa",
+        "content": [{"type":"text","text":"A cinematic sunrise"}]
+      }
     }
   }'
 ```
