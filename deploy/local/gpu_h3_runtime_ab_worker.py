@@ -16,6 +16,7 @@ from pathlib import Path
 
 SCRIPT = Path("/mnt/disk2/h3-runtime-ab/run_runtime_ab_benchmark.py")
 PYTHON = "/home/neo/comfyui-fasth3-shadow/env-cu130/bin/python"
+INPUT_ROOT = Path("/home/neo/ComfyUI/input")
 RUNTIMES = (
     ("torch-2.8-cu128", "http://127.0.0.1:8188"),
     ("torch-2.9.1-cu130", "http://127.0.0.1:8194"),
@@ -165,6 +166,7 @@ def run_once(runtime: str, url: str, item: dict, phase: str, seed: int,
         "--duration", str(float(item["duration"])), "--steps", str(item["steps"]),
         "--seed", str(seed),
         "--timeout-seconds", str(timeout_seconds),
+        "--input-root", str(INPUT_ROOT),
         "--prefix", f"h3-runtime-ab/{runtime}/{phase}",
     ]
     for image_name in item["referenceImages"]:

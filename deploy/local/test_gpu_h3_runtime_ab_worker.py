@@ -86,6 +86,27 @@ class H3RuntimeAbWorkerTest(unittest.TestCase):
             self.assertEqual(1, len(results))
             self.assertTrue(cancel_observed)
 
+    def test_run_once_uses_comfy_input_root_for_reference_hashes(self):
+        item = worker.validated(self.job(
+            resolution="768P", duration=5, steps=20, warmRuns=1,
+            targets=["torch-2.8-cu128"],
+            referenceImages=["front.png", "sunlanlan_ref.png"],
+        ))
+        completed = mock.MagicMock(
+            returncode=0, stdout='{"output":null}\n', stderr="",
+        )
+        with mock.patch.object(worker, "_gpu_sample", return_value=None), \
+                mock.patch.object(worker.subprocess, "run", return_value=completed) as run:
+            worker.run_once(
+                "torch-2.8-cu128", "http://127.0.0.1:8188", item,
+                "cold", 20261017, 600,
+            )
+
+        command = run.call_args.args[0]
+        self.assertEqual(
+            str(worker.INPUT_ROOT), command[command.index("--input-root") + 1],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

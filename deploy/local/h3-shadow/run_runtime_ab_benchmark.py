@@ -160,6 +160,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20261017)
     parser.add_argument("--prefix", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=7200)
+    parser.add_argument("--input-root", type=Path, default=Path("input"))
     parser.add_argument("--reference-image", dest="reference_images", action="append")
     parser.add_argument("--prompt")
     args = parser.parse_args()
@@ -194,7 +195,7 @@ def main() -> None:
                 "frames": frame_count(args.duration), "seed": args.seed,
                 "inputMode": "multi-reference-image" if args.reference_images else "text",
                 "referenceImages": args.reference_images,
-                "referenceHashes": reference_hashes(args.reference_images),
+                "referenceHashes": reference_hashes(args.reference_images, args.input_root),
                 "output": output_ref(result),
             }, ensure_ascii=False, separators=(",", ":")))
             return
