@@ -62,6 +62,11 @@ def free_runtime(url: str) -> None:
     time.sleep(5)
 
 
+def cancellation_requested() -> bool:
+    value = os.environ.get("GPU_JOB_CANCEL_FILE")
+    return bool(value and Path(value).is_file())
+
+
 def load_job(path: Path) -> dict:
     if not path.is_file() or path.stat().st_size > 1024 * 1024:
         raise RuntimeError("job file is missing or too large")
@@ -196,28 +201,31 @@ def run_once(runtime: str, url: str, item: dict, phase: str, seed: int,
     return output
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("job_file")
-    parser.add_argument("--timeout", type=int, default=7200)
-    args = parser.parse_args()
-    item = validated(load_job(Path(args.job_file)))
-    timeout_seconds = max(600, min(args.timeout, 7200))
+def run_benchmark(item: dict, timeout_seconds: int) -> tuple[list[dict], bool]:
     results: list[dict] = []
+    cancel_observed = False
     try:
         for runtime, url in RUNTIMES:
             if runtime not in item["targets"]:
                 continue
+            if cancellation_requested():
+                cancel_observed = True
+                break
             wait_runtime(url)
             free_runtime(url)
             results.append(run_once(
                 runtime, url, item, "cold", 20261017, timeout_seconds,
             ))
             for index in range(item["warmRuns"]):
+                if cancellation_requested():
+                    cancel_observed = True
+                    break
                 results.append(run_once(
                     runtime, url, item, f"warm-{index + 1}",
                     20261018 + index, timeout_seconds,
                 ))
+            if cancel_observed:
+                break
             free_runtime(url)
     finally:
         for _, url in RUNTIMES:
@@ -225,11 +233,23 @@ def main() -> None:
                 free_runtime(url)
             except Exception:
                 pass
+    return results, cancel_observed
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("job_file")
+    parser.add_argument("--timeout", type=int, default=7200)
+    args = parser.parse_args()
+    item = validated(load_job(Path(args.job_file)))
+    timeout_seconds = max(600, min(args.timeout, 7200))
+    results, cancel_observed = run_benchmark(item, timeout_seconds)
     refs = [entry["output"] for entry in results if isinstance(entry.get("output"), dict)]
     print(json.dumps({
         "experiment": "runtime-ab", "results": results,
         "inputMode": ("multi-reference-image" if item["referenceImages"] else "text"),
         "referenceImages": item["referenceImages"],
+        "cancelObserved": cancel_observed,
         "resultRefs": refs, "resultRef": json.dumps(refs, ensure_ascii=False),
     }, ensure_ascii=False, separators=(",", ":")))
 

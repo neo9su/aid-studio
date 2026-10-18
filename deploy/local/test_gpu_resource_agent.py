@@ -93,6 +93,27 @@ class AgentCommandSafetyTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not result JSON"):
             worker_result("done", required=True)
 
+    def test_heartbeat_writes_cancel_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = NodeAgent.__new__(NodeAgent)
+            agent.base_url = "http://127.0.0.1:18120"
+            agent.token = "agent-token"
+            agent.node_id = "node-222"
+            agent.ca_file = None
+            stop = threading.Event()
+            cancel_seen = threading.Event()
+            cancel_file = Path(directory) / "job-54.json.cancel"
+
+            def heartbeat(*args, **kwargs):
+                stop.set()
+                return {"cancelRequested": True}
+
+            with patch("gpu_resource_agent.api_json", side_effect=heartbeat):
+                agent._lease_heartbeat(stop, 54, "lease", cancel_file, cancel_seen)
+
+            self.assertTrue(cancel_seen.is_set())
+            self.assertEqual("cancel_requested\n", cancel_file.read_text(encoding="utf-8"))
+
     def test_low_vram_idle_daemon_is_annotated_as_infrastructure(self):
         agent = NodeAgent.__new__(NodeAgent)
         agent._active_lock = threading.Lock()

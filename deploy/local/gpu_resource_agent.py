@@ -368,16 +368,28 @@ class NodeAgent:
                 ca_file=self.ca_file,
             )
 
-    def _lease_heartbeat(self, stop: threading.Event, job_id: int, lease_token: str) -> None:
-        while not stop.wait(10):
+    @staticmethod
+    def _write_cancel_marker(cancel_file: Path) -> None:
+        temporary = cancel_file.with_suffix(cancel_file.suffix + ".tmp")
+        temporary.write_text("cancel_requested\n", encoding="utf-8")
+        temporary.replace(cancel_file)
+
+    def _lease_heartbeat(self, stop: threading.Event, job_id: int, lease_token: str,
+                         cancel_file: Path, cancel_seen: threading.Event) -> None:
+        while not stop.is_set():
             try:
-                api_json(self.base_url, self.token, f"/v1/agent/jobs/{job_id}/heartbeat", {
+                response = api_json(self.base_url, self.token, f"/v1/agent/jobs/{job_id}/heartbeat", {
                     "nodeId": self.node_id,
                     "leaseToken": lease_token,
                     "leaseSeconds": 45,
                 }, ca_file=self.ca_file)
+                if response.get("cancelRequested"):
+                    cancel_seen.set()
+                    self._write_cancel_marker(cancel_file)
             except Exception as exc:
                 print(f"lease heartbeat failed for job {job_id}: {exc}", flush=True)
+            if stop.wait(10):
+                break
 
     def _execute_job(self, claim: dict[str, Any]) -> None:
         job = claim["job"]
@@ -386,7 +398,10 @@ class NodeAgent:
         lease_token = str(claim["leaseToken"])
         gpu_ids = list(job.get("assigned_gpu_ids") or [])
         stop = threading.Event()
-        heart = threading.Thread(target=self._lease_heartbeat, args=(stop, job_id, lease_token), daemon=True)
+        cancel_seen = threading.Event()
+        job_file: Path | None = None
+        cancel_file: Path | None = None
+        heart: threading.Thread | None = None
         success = False
         error: str | None = None
         result_payload: dict[str, Any] | None = None
@@ -395,9 +410,15 @@ class NodeAgent:
             if not claim.get("job", {}).get("warm_hit"):
                 self._start_profile(profile_name, profile)
             job_file = self._job_file(job, gpu_ids)
+            cancel_file = job_file.with_suffix(job_file.suffix + ".cancel")
+            cancel_file.unlink(missing_ok=True)
             command = self._materialize(profile.get("runCommand") or [], job_file)
             if not command:
                 raise RuntimeError(f"profile {profile_name!r} has no runCommand")
+            heart = threading.Thread(
+                target=self._lease_heartbeat,
+                args=(stop, job_id, lease_token, cancel_file, cancel_seen), daemon=True,
+            )
             heart.start()
             if self.dry_run:
                 time.sleep(float(profile.get("dryRunSeconds", 0.1)))
@@ -408,6 +429,7 @@ class NodeAgent:
                 env["CUDA_VISIBLE_DEVICES"] = ",".join(indices)
                 env["GPU_RESOURCE_IDS"] = ",".join(gpu_ids)
                 env["GPU_JOB_ID"] = str(job_id)
+                env["GPU_JOB_CANCEL_FILE"] = str(cancel_file)
                 process = subprocess.Popen(
                     command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     env=env, start_new_session=True,
@@ -435,10 +457,11 @@ class NodeAgent:
             error = f"{type(exc).__name__}: {exc}"
         finally:
             stop.set()
-            if heart.is_alive():
+            if heart is not None and heart.is_alive():
                 heart.join(timeout=2)
             try:
-                keep_warm = success and int(claim.get("profileConfig", {}).get("warmSeconds", 0)) > 0
+                keep_warm = (success and not cancel_seen.is_set()
+                             and int(claim.get("profileConfig", {}).get("warmSeconds", 0)) > 0)
                 if not keep_warm:
                     try:
                         self._stop_profile(profile_name)
@@ -454,6 +477,8 @@ class NodeAgent:
                     "result": result_payload,
                 }, ca_file=self.ca_file)
             finally:
+                if cancel_file is not None:
+                    cancel_file.unlink(missing_ok=True)
                 with self._active_lock:
                     self.active.pop(job_id, None)
                     self.authorized_jobs.pop(job_id, None)

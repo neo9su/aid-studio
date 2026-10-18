@@ -729,13 +729,14 @@ class GpuScheduler:
             self._verify_lease(row, node_id, lease_token)
             profile = self.get_profile(row["profile"]) or {}
             gpu_ids = json.loads(row["assigned_gpu_ids_json"] or "[]")
-            final_state = "SUCCEEDED" if success else "FAILED"
+            cancelled = bool(row["cancel_requested"])
+            final_state = "CANCELLED" if cancelled else ("SUCCEEDED" if success else "FAILED")
             conn.execute(
                 """UPDATE jobs SET status=?,error_message=?,result_json=?,lease_token_hash=NULL,lease_expires_at=NULL,
                    finished_at=?,updated_at=? WHERE id=?""",
                 (final_state, error, self._json(result) if result is not None else None, now, now, job_id),
             )
-            warm_seconds = int(profile.get("warmSeconds", 0)) if success else 0
+            warm_seconds = int(profile.get("warmSeconds", 0)) if success and not cancelled else 0
             if warm_seconds > 0:
                 conn.executemany(
                     """UPDATE gpus SET state='WARM',current_job_id=NULL,warm_profile=?,warm_key=?,warm_until=?,

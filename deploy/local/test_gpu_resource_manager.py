@@ -121,6 +121,22 @@ class GpuSchedulerTest(unittest.TestCase):
         self.assertEqual(
             "media://project-26/shot-18.mp4", finished["result"]["resultRef"])
 
+    def test_cancelled_running_job_finishes_cancelled_without_warm_retention(self):
+        job = self.submit(profile="h3-single-fast")
+        claim = self.scheduler.claim("node-222")
+        self.scheduler.cancel_job(job["id"], "aid")
+
+        finished = self.scheduler.finish_job(
+            job["id"], "node-222", claim["leaseToken"], True,
+            result={"cancelObserved": True},
+        )
+
+        self.assertEqual("CANCELLED", finished["status"])
+        snapshot = self.scheduler.snapshot()
+        gpu = next(item for item in snapshot["nodes"][0]["gpus"] if item["gpu_id"] == "GPU-1")
+        self.assertEqual("FREE", gpu["state"])
+        self.assertIsNone(gpu["warm_profile"])
+
     def test_client_cannot_reprioritize_another_sources_job(self):
         job = self.submit(source="aid")
         with self.assertRaises(SchedulerError) as raised:

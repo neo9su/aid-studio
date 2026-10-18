@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from unittest import mock
 from pathlib import Path
 
@@ -60,6 +61,30 @@ class H3RuntimeAbWorkerTest(unittest.TestCase):
                 resolution="480P", duration=4, steps=20, warmRuns=1,
                 targets=["aki-bundle"],
             ))
+
+    def test_cancel_marker_stops_before_next_warm_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cancel_file = Path(directory) / "job.cancel"
+            item = worker.validated(self.job(
+                resolution="768P", duration=5, steps=20, warmRuns=2,
+                targets=["torch-2.8-cu128"],
+            ))
+            phases = []
+
+            def run_once(runtime, url, benchmark, phase, seed, timeout_seconds):
+                phases.append(phase)
+                cancel_file.write_text("cancel_requested\n", encoding="utf-8")
+                return {"phase": phase, "output": {"filename": "cold.mp4"}}
+
+            with mock.patch.dict(os.environ, {"GPU_JOB_CANCEL_FILE": str(cancel_file)}), \
+                    mock.patch.object(worker, "wait_runtime"), \
+                    mock.patch.object(worker, "free_runtime"), \
+                    mock.patch.object(worker, "run_once", side_effect=run_once):
+                results, cancel_observed = worker.run_benchmark(item, 600)
+
+            self.assertEqual(["cold"], phases)
+            self.assertEqual(1, len(results))
+            self.assertTrue(cancel_observed)
 
 
 if __name__ == "__main__":
